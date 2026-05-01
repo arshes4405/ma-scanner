@@ -1,0 +1,12 @@
+{
+  "name": "ma-scanner",
+  "version": "1.0.0",
+  "description": "Binance Futures MA 돌파 스캐너",
+  "main": "scanner-tg.js",
+  "scripts": {
+    "start": "node scanner-tg.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
