@@ -12,7 +12,7 @@ const CONFIG = {
   TG_CHAT_ID: process.env.TG_CHAT_ID || "여기에ChatID",
 
   // 스캐너 설정
-  BASE_URL:          "https://fapi.binance.com",
+  BASE_URL:          "https://fapi-data.binance.com",
   INTERVAL:          "1h",
   WINDOW_HOURS:      5,
   MIN_CANDLE_CHANGE: 1.0,
