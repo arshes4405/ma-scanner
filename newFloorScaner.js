@@ -311,6 +311,46 @@ function formatMessage(results, elapsed, total) {
   return msg;
 }
 
+// ─── 테스트 매도 ──────────────────────────────────────────────────────────────
+async function testSell(symbol = "ETHUSDT") {
+  console.log(`\n=== [TEST SELL] ${symbol} ===`);
+  try {
+    const hedgeMode = await getIsHedgeMode();
+    console.log(`  포지션 모드: ${hedgeMode ? "헤지모드" : "단방향"}`);
+
+    const qs    = `symbol=${symbol}&timestamp=${Date.now()}`;
+    const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
+    const pos   = hedgeMode
+      ? pRisk.find(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
+      : pRisk.find(p => parseFloat(p.positionAmt) > 0);
+
+    if (!pos) {
+      console.log(`  포지션 없음 → 매도 스킵`);
+      await sendTelegram(`⚠️ [TEST] ${symbol} 포지션 없음`);
+      return;
+    }
+
+    const qty      = Math.abs(parseFloat(pos.positionAmt));
+    const entry    = parseFloat(pos.entryPrice);
+    const posSide  = hedgeMode ? "&positionSide=LONG" : "";
+    console.log(`  포지션 확인: 진입가 $${entry}, qty: ${qty}`);
+
+    const sellQs = `symbol=${symbol}&side=SELL${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+    const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
+    console.log(`  매도 완료! orderId: ${order.orderId} | qty: ${order.origQty}`);
+
+    await sendTelegram(
+      `✅ [TEST] ${symbol} 매도 완료\n` +
+      `  진입가: $${entry} | 수량: ${qty}\n` +
+      `  orderId: ${order.orderId}`
+    );
+  } catch (e) {
+    console.error(`  실패:`, e.message);
+    await sendTelegram(`❌ [TEST] ${symbol} 매도 실패: ${e.message}`);
+  }
+  console.log(`=== [TEST SELL] 완료 ===\n`);
+}
+
 // ─── 테스트 매수 ──────────────────────────────────────────────────────────────
 async function testBuy(symbol = "ETHUSDT") {
   console.log(`\n=== [TEST BUY] ${symbol} ===`);
@@ -377,8 +417,8 @@ async function main() {
   const startTime = Date.now();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작`);
 
-  // ★ 테스트 매수 - 확인 후 제거
-  await testBuy("ETHUSDT");
+  // ★ 테스트 매도 - 확인 후 제거
+  await testSell("ETHUSDT");
   process.exit(0);
 
   loadState();
