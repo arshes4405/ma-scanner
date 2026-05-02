@@ -23,6 +23,7 @@ const CONFIG = {
   RSI_THRESHOLD:      30,
   ORDER_USDT:         100,  // notional (마진 = ORDER_USDT / LEVERAGE)
   LEVERAGE:           20,
+  SL_PCT:             3,    // 스탑로스 % (진입가 대비 하락)
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };
 
@@ -172,14 +173,17 @@ async function getSymbolsInfo() {
   const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
   const symbols   = [];
   const stepSizes = {};
+  const tickSizes = {};
   for (const s of d.symbols) {
     if (s.quoteAsset === "USDT" && s.contractType === "PERPETUAL" && s.status === "TRADING") {
       symbols.push(s.symbol);
-      const lot = s.filters.find(f => f.filterType === "LOT_SIZE");
-      if (lot) stepSizes[s.symbol] = parseFloat(lot.stepSize);
+      const lot   = s.filters.find(f => f.filterType === "LOT_SIZE");
+      const price = s.filters.find(f => f.filterType === "PRICE_FILTER");
+      if (lot)   stepSizes[s.symbol] = parseFloat(lot.stepSize);
+      if (price) tickSizes[s.symbol] = parseFloat(price.tickSize);
     }
   }
-  return { symbols, stepSizes };
+  return { symbols, stepSizes, tickSizes };
 }
 
 async function getVolumes() {
@@ -216,6 +220,12 @@ async function placeMarketBuy(symbol, price, stepSize) {
   const qty = floorToStep(CONFIG.ORDER_USDT / price, stepSize || 0.001);
   if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
   const qs = `symbol=${symbol}&side=BUY&positionSide=LONG&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+  return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
+}
+
+async function placeStopLoss(symbol, entryPrice, tickSize) {
+  const stopPrice = floorToStep(entryPrice * (1 - CONFIG.SL_PCT / 100), tickSize || 0.01);
+  const qs = `symbol=${symbol}&side=SELL&positionSide=LONG&type=STOP_MARKET&stopPrice=${stopPrice}&closePosition=true&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
@@ -317,14 +327,19 @@ async function testBuy(symbol = "ETHUSDT") {
     await setLeverage(symbol);
     console.log(`  레버리지 ${CONFIG.LEVERAGE}x 설정 완료`);
 
-    const { symbols: _, stepSizes } = await getSymbolsInfo();
+    const { symbols: _, stepSizes, tickSizes } = await getSymbolsInfo();
     const order = await placeMarketBuy(symbol, price, stepSizes[symbol]);
     console.log(`  매수 완료! orderId: ${order.orderId} | qty: ${order.origQty}`);
+
+    const sl    = await placeStopLoss(symbol, price, tickSizes[symbol]);
+    const slPrice = floorToStep(price * (1 - CONFIG.SL_PCT / 100), tickSizes[symbol] || 0.01);
+    console.log(`  스탑로스 설정! orderId: ${sl.orderId} | stopPrice: $${slPrice}`);
+
     await sendTelegram(
       `✅ [TEST] ${symbol} 매수 완료\n` +
-      `  가격: $${price}\n` +
-      `  수량: ${order.origQty}\n` +
-      `  notional: $${CONFIG.ORDER_USDT} / 레버리지: ${CONFIG.LEVERAGE}x\n` +
+      `  진입가: $${price} | 수량: ${order.origQty}\n` +
+      `  notional: $${CONFIG.ORDER_USDT} / ${CONFIG.LEVERAGE}x\n` +
+      `  🛑 스탑로스: $${slPrice} (-${CONFIG.SL_PCT}%)\n` +
       `  orderId: ${order.orderId}`
     );
   } catch (e) {
@@ -347,7 +362,7 @@ async function main() {
   loadState(); // 향후 쿨다운 복원 시 사용
 
   try {
-    const { symbols: allSymbols, stepSizes } = await getSymbolsInfo();
+    const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const volMap = await getVolumes();
     const symbols = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
@@ -369,9 +384,12 @@ async function main() {
               r.orderStatus = "이미 보유중";
             } else {
               await setLeverage(sym);
-              const order = await placeMarketBuy(sym, r.price, stepSizes[sym]);
+              const order   = await placeMarketBuy(sym, r.price, stepSizes[sym]);
+              const sl      = await placeStopLoss(sym, r.price, tickSizes[sym]);
+              const slPrice = floorToStep(r.price * (1 - CONFIG.SL_PCT / 100), tickSizes[sym] || 0.01);
               console.log(`  [BUY]  ${sym} 매수 완료 orderId: ${order.orderId} qty: ${order.origQty}`);
-              r.orderStatus = `매수 완료 | qty: ${order.origQty} | $${CONFIG.ORDER_USDT} / ${CONFIG.LEVERAGE}x`;
+              console.log(`  [SL]   ${sym} 스탑로스 $${slPrice} orderId: ${sl.orderId}`);
+              r.orderStatus = `매수 완료 | qty: ${order.origQty} | SL: $${slPrice} (-${CONFIG.SL_PCT}%)`;
             }
           } catch (e) {
             console.error(`  [ERR]  ${sym} 주문 실패:`, e.message);
