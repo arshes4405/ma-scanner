@@ -1,25 +1,29 @@
 /**
- * Binance Futures 바닥 스캐너
- * 조건: MA 역배열 (MA99 > MA30 > MA10) + RSI(14) < 30
- *       + 현재봉 양봉 + 현재봉 거래량 > 직전봉 거래량
+ * Binance Futures 바닥 스캐너 + 자동매수
+ * 조건: MA 역배열 + 직전봉 RSI<30 + 직전봉 BB하단 이탈 + 현재봉 양봉 + 거래량 돌파
+ * 자동매수: 조건 충족 + 미보유 시 20배 레버리지 $100 notional 매수
  */
 
-const https = require("https");
-const fs    = require("fs");
-const path  = require("path");
+const https  = require("https");
+const fs     = require("fs");
+const path   = require("path");
+const crypto = require("crypto");
 
 const CONFIG = {
-  TG_TOKEN:        process.env.TG_TOKEN    || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
-  TG_CHAT_ID:      process.env.TG_CHAT_ID  || "133371996",
-  BASE_URL:        "https://fapi.binance.com",
-  INTERVAL:        "1h",
-  CANDLE_LIMIT:    150,
-  MIN_VOLUME_USDT: 1_000_000,
-  REQUEST_DELAY:   120,
-  RSI_PERIOD:      14,
-  RSI_THRESHOLD:   30,
-  COOLDOWN_MS:     2 * 60 * 60 * 1000,
-  STATE_FILE:      path.join(__dirname, "floor_state.json"),
+  TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
+  TG_CHAT_ID:         process.env.TG_CHAT_ID          || "133371996",
+  BINANCE_API_KEY:    process.env.BINANCE_API_KEY     || "JYPKR09GLF0jmld6hyGxLqavw3RcTtVEzK8tEtoQwSF2g0Y6XX5kbqjoNBcZrP4N",
+  BINANCE_SECRET_KEY: process.env.BINANCE_SECRET_KEY  || "dTHfgpNSvBgWk6bl1GLOpW7oyqauHgTCmFzaC1FgL7PcFcpGsvbo6VctuYIcm5Xx",
+  BASE_URL:           "https://fapi.binance.com",
+  INTERVAL:           "1h",
+  CANDLE_LIMIT:       150,
+  MIN_VOLUME_USDT:    1_000_000,
+  REQUEST_DELAY:      120,
+  RSI_PERIOD:         14,
+  RSI_THRESHOLD:      30,
+  ORDER_USDT:         100,  // notional (마진 = ORDER_USDT / LEVERAGE)
+  LEVERAGE:           20,
+  STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };
 
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -33,6 +37,52 @@ function httpGet(url) {
         else resolve(JSON.parse(data));
       });
     }).on("error", reject);
+  });
+}
+
+function sign(qs) {
+  return crypto.createHmac("sha256", CONFIG.BINANCE_SECRET_KEY).update(qs).digest("hex");
+}
+
+function httpGetAuth(url) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    https.get(
+      { hostname: parsed.hostname, path: parsed.pathname + parsed.search,
+        headers: { "X-MBX-APIKEY": CONFIG.BINANCE_API_KEY } },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => {
+          if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+          else resolve(JSON.parse(data));
+        });
+      }
+    ).on("error", reject);
+  });
+}
+
+function httpPostSigned(endpoint, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      { hostname: "fapi.binance.com", path: endpoint, method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(body),
+          "X-MBX-APIKEY": CONFIG.BINANCE_API_KEY,
+        }},
+      (res) => {
+        let d = "";
+        res.on("data", c => d += c);
+        res.on("end", () => {
+          if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}: ${d}`));
+          else resolve(JSON.parse(d));
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
   });
 }
 
@@ -52,6 +102,11 @@ function httpsPost(hostname, path, body) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function floorToStep(value, step) {
+  const precision = Math.max(0, Math.round(-Math.log10(step)));
+  return parseFloat((Math.floor(value / step) * step).toFixed(precision));
+}
+
 // ─── 지표 계산 ────────────────────────────────────────────────────────────────
 function calcMA(closes, period) {
   if (closes.length < period) return null;
@@ -62,22 +117,10 @@ function calcMA(closes, period) {
 function calcRSI(closes, period) {
   if (closes.length < period + 1) return null;
 
-  let avgGain = 0, avgLoss = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff > 0) avgGain += diff;
-    else avgLoss -= diff;
-  }
-  avgGain /= period;
-  avgLoss /= period;
-
-  // Wilder's smoothing (이전 봉들)
-  // 초기값 계산을 위해 더 앞에서부터 smoothing
   let ag = 0, al = 0;
-  const start = closes.length - period * 3;
-  const from  = Math.max(1, start);
+  const from = Math.max(1, closes.length - period * 3);
 
-  for (let i = from; i <= from + period - 1; i++) {
+  for (let i = from; i < from + period; i++) {
     const diff = closes[i] - closes[i - 1];
     if (diff > 0) ag += diff; else al -= diff;
   }
@@ -86,10 +129,8 @@ function calcRSI(closes, period) {
 
   for (let i = from + period; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
-    const gain = diff > 0 ? diff : 0;
-    const loss = diff < 0 ? -diff : 0;
-    ag = (ag * (period - 1) + gain) / period;
-    al = (al * (period - 1) + loss) / period;
+    ag = (ag * (period - 1) + Math.max(0,  diff)) / period;
+    al = (al * (period - 1) + Math.max(0, -diff)) / period;
   }
 
   if (al === 0) return 100;
@@ -117,11 +158,6 @@ function saveState(state) {
   try { fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
 }
 
-function isOnCooldown(state, symbol) {
-  const last = state[symbol];
-  return last && Date.now() - last < CONFIG.COOLDOWN_MS;
-}
-
 function updateState(state, symbols) {
   const now = Date.now();
   for (const sym of symbols) state[sym] = now;
@@ -131,12 +167,19 @@ function updateState(state, symbols) {
   return state;
 }
 
-// ─── API ─────────────────────────────────────────────────────────────────────
-async function getAllSymbols() {
+// ─── API (Public) ─────────────────────────────────────────────────────────────
+async function getSymbolsInfo() {
   const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
-  return d.symbols
-    .filter(s => s.quoteAsset === "USDT" && s.contractType === "PERPETUAL" && s.status === "TRADING")
-    .map(s => s.symbol);
+  const symbols   = [];
+  const stepSizes = {};
+  for (const s of d.symbols) {
+    if (s.quoteAsset === "USDT" && s.contractType === "PERPETUAL" && s.status === "TRADING") {
+      symbols.push(s.symbol);
+      const lot = s.filters.find(f => f.filterType === "LOT_SIZE");
+      if (lot) stepSizes[s.symbol] = parseFloat(lot.stepSize);
+    }
+  }
+  return { symbols, stepSizes };
 }
 
 async function getVolumes() {
@@ -153,8 +196,27 @@ async function getKlines(symbol) {
   return d.map(k => ({
     open:   parseFloat(k[1]),
     close:  parseFloat(k[4]),
-    volume: parseFloat(k[7]), // quote asset volume (USDT)
+    volume: parseFloat(k[7]),
   }));
+}
+
+// ─── API (Signed) ─────────────────────────────────────────────────────────────
+async function hasOpenPosition(symbol) {
+  const qs   = `symbol=${symbol}&timestamp=${Date.now()}`;
+  const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
+  return data.some(p => Math.abs(parseFloat(p.positionAmt)) > 0);
+}
+
+async function setLeverage(symbol) {
+  const qs = `symbol=${symbol}&leverage=${CONFIG.LEVERAGE}&timestamp=${Date.now()}`;
+  return httpPostSigned("/fapi/v1/leverage", `${qs}&signature=${sign(qs)}`);
+}
+
+async function placeMarketBuy(symbol, price, stepSize) {
+  const qty = floorToStep(CONFIG.ORDER_USDT / price, stepSize || 0.001);
+  if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
+  const qs = `symbol=${symbol}&side=BUY&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+  return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
 // ─── 분석 ─────────────────────────────────────────────────────────────────────
@@ -182,7 +244,7 @@ function analyze(symbol, klines) {
 
   const prevCloses = closes.slice(0, -1);
 
-  // 직전봉 기준 RSI (현재 양봉으로 RSI가 30 위로 올라온 케이스 포함)
+  // 직전봉 기준 RSI < 30
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
 
@@ -192,13 +254,14 @@ function analyze(symbol, klines) {
 
   return {
     symbol,
-    price:      cur.close,
-    rsi:        +rsi.toFixed(1),
-    ma10:       +ma10.toFixed(4),
-    ma30:       +ma30.toFixed(4),
-    ma99:       +ma99.toFixed(4),
+    price:       cur.close,
+    rsi:         +rsi.toFixed(1),
+    bbLower:     +bbLower.toFixed(4),
+    ma10:        +ma10.toFixed(4),
+    ma30:        +ma30.toFixed(4),
+    ma99:        +ma99.toFixed(4),
     pctFromMA10: +(((cur.close - ma10) / ma10) * 100).toFixed(1),
-    volRatio:   +(cur.volume / prev.volume).toFixed(2), // 직전봉 대비 거래량 배율
+    volRatio:    +(cur.volume / prev.volume).toFixed(2),
   };
 }
 
@@ -212,28 +275,25 @@ async function sendTelegram(text) {
   } catch (e) { console.error("[TG] 전송 실패:", e.message); }
 }
 
-function formatMessage(results, elapsed, total, skipped) {
+function formatMessage(results, elapsed, total) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
   let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;30 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
-  if (skipped > 0) msg += `🔕 쿨다운 중 ${skipped}개 제외\n`;
   msg += `─────────────────\n`;
 
-  if (!results.length) {
-    msg += `\n해당 종목 없음`;
-    return msg;
-  }
-
-  // RSI 낮은 순 정렬
   results.sort((a, b) => a.rsi - b.rsi);
 
   for (const r of results) {
     const vol = r.vol >= 1e9 ? (r.vol / 1e9).toFixed(1) + "B" : (r.vol / 1e6).toFixed(0) + "M";
     msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
-    msg += `  RSI: <b>${r.rsi}</b> | MA10 대비 ${r.pctFromMA10}%\n`;
+    msg += `  RSI(직전): <b>${r.rsi}</b> | BB하단: ${r.bbLower}\n`;
     msg += `  MA10: ${r.ma10} | MA30: ${r.ma30} | MA99: ${r.ma99}\n`;
     msg += `  거래량: ${vol} | 직전봉 대비 <b>${r.volRatio}x</b>\n`;
+    if (r.orderStatus) {
+      const icon = r.orderStatus.startsWith("매수 완료") ? "✅" : r.orderStatus.startsWith("이미") ? "⏭" : "❌";
+      msg += `  ${icon} ${r.orderStatus}\n`;
+    }
   }
 
   return msg;
@@ -244,16 +304,15 @@ async function main() {
   const startTime = Date.now();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작`);
 
-  const state = loadState();
+  loadState(); // 향후 쿨다운 복원 시 사용
 
   try {
-    let symbols = await getAllSymbols();
+    const { symbols: allSymbols, stepSizes } = await getSymbolsInfo();
     const volMap = await getVolumes();
-    symbols = symbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
+    const symbols = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
-    const total = symbols.length;
+    const total   = symbols.length;
     const results = [];
-    let skipped = 0;
 
     for (let i = 0; i < symbols.length; i++) {
       const sym = symbols[i];
@@ -262,23 +321,37 @@ async function main() {
         const r = analyze(sym, klines);
         if (r) {
           r.vol = volMap[sym] || 0;
+
+          // 포지션 체크 후 매수
+          const alreadyIn = await hasOpenPosition(sym);
+          if (alreadyIn) {
+            console.log(`  [SKIP] ${sym} 이미 포지션 있음`);
+            r.orderStatus = "이미 보유중";
+          } else {
+            await setLeverage(sym);
+            const order = await placeMarketBuy(sym, r.price, stepSizes[sym]);
+            console.log(`  [BUY]  ${sym} 매수 완료 orderId: ${order.orderId} qty: ${order.origQty}`);
+            r.orderStatus = `매수 완료 | qty: ${order.origQty} | $${CONFIG.ORDER_USDT} / ${CONFIG.LEVERAGE}x`;
+          }
+
           results.push(r);
         }
-      } catch (_) {}
+      } catch (e) {
+        // 주문 실패 시 결과에는 포함
+        console.error(`  [ERR]  ${sym}:`, e.message);
+        // analyze 결과가 있었다면 이미 results에 없으므로 별도 처리 불필요
+      }
 
       if (i % 20 === 0) process.stdout.write(`\r진행: ${i}/${total} 발견: ${results.length}개`);
       await sleep(CONFIG.REQUEST_DELAY);
     }
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`\n완료: ${results.length}개 발견, ${skipped}개 쿨다운 (${elapsed}초)`);
+    console.log(`\n완료: ${results.length}개 발견 (${elapsed}초)`);
 
-    if (results.length > 0) {
-      updateState(state, results.map(r => r.symbol));
-      saveState(state);
-    }
+    if (!results.length) { process.exit(0); return; }
 
-    const msg = formatMessage(results, elapsed, total, skipped);
+    const msg = formatMessage(results, elapsed, total);
     if (msg.length <= 4096) {
       await sendTelegram(msg);
     } else {
