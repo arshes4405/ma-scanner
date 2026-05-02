@@ -170,7 +170,7 @@ async function main() {
   log(`[${new Date().toLocaleString("ko-KR")}] ${VERSION} 시작`);
 
   // 조건별 카운터
-  const counter = { 양봉: 0, 거래량: 0, MA역배열: 0, RSI: 0, BB하단: 0, 통과: 0 };
+  const counter = { 음봉: 0, 거래량: 0, "MA 역배열": 0, RSI: 0, BB하단: 0, 통과: 0 };
   const passed = [];
 
   try {
@@ -205,9 +205,9 @@ async function main() {
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     log(`\n${"─".repeat(50)}`);
     log(`[조건별 탈락 요약] (${elapsed}초)`);
-    log(`  양봉 아님    : ${counter["양봉"]}개`);
+    log(`  양봉 아님    : ${counter["음봉"]}개`);
     log(`  거래량 미달  : ${counter["거래량"]}개`);
-    log(`  MA역배열 아님: ${counter["MA역배열"]}개`);
+    log(`  MA역배열 아님: ${counter["MA 역배열"]}개`);
     log(`  RSI 초과     : ${counter["RSI"]}개`);
     log(`  BB하단 미이탈: ${counter["BB하단"]}개`);
     log(`  최종 통과    : ${counter["통과"]}개`);
