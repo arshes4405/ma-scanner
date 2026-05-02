@@ -96,6 +96,14 @@ function calcRSI(closes, period) {
   return 100 - 100 / (1 + ag / al);
 }
 
+function calcBollingerLower(closes, period = 20, mult = 2) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const mean  = slice.reduce((s, v) => s + v, 0) / period;
+  const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
+  return mean - mult * std;
+}
+
 // ─── 쿨다운 ──────────────────────────────────────────────────────────────────
 function loadState() {
   try {
@@ -172,9 +180,15 @@ function analyze(symbol, klines) {
   // MA 역배열: MA99 > MA30 > MA10
   if (!(ma99 > ma30 && ma30 > ma10)) return null;
 
+  const prevCloses = closes.slice(0, -1);
+
   // 직전봉 기준 RSI (현재 양봉으로 RSI가 30 위로 올라온 케이스 포함)
-  const rsi = calcRSI(closes.slice(0, -1), CONFIG.RSI_PERIOD);
+  const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
+
+  // 직전봉이 볼린저 하단(20, 2) 아래로 이탈
+  const bbLower = calcBollingerLower(prevCloses);
+  if (!bbLower || prevCloses[prevCloses.length - 1] >= bbLower) return null;
 
   return {
     symbol,
@@ -200,7 +214,7 @@ async function sendTelegram(text) {
 
 function formatMessage(results, elapsed, total, skipped) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;30 + 양봉 + 거래량 돌파)</b>\n`;
+  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;30 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
   if (skipped > 0) msg += `🔕 쿨다운 중 ${skipped}개 제외\n`;
