@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-02 v7";
+const VERSION = "2026-05-02 v8";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -198,6 +198,7 @@ async function getKlines(symbol) {
   );
   return d.map(k => ({
     open:   parseFloat(k[1]),
+    low:    parseFloat(k[3]),
     close:  parseFloat(k[4]),
     volume: parseFloat(k[7]),
   }));
@@ -305,8 +306,10 @@ function analyze(symbol, klines) {
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
 
+  // 직전봉 저가가 볼린저 하단(20, 2) 아래로 이탈
   const bbLower = calcBollingerLower(prevCloses);
-  if (!bbLower || prevCloses[prevCloses.length - 1] >= bbLower) return null;
+  const prevLow = klines[lastIdx - 1].low;
+  if (!bbLower || prevLow >= bbLower) return null;
 
   return {
     symbol,
