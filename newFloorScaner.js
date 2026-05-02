@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-02 v6";
+const VERSION = "2026-05-02 v7";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -23,8 +23,9 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
-  ORDER_USDT:         100,
+  ORDER_USDT:         500,
   LEVERAGE:           20,
+  LEVERAGE_FALLBACK:  10,
   SL_PCT:             3,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };
@@ -218,8 +219,8 @@ async function hasOpenPosition(symbol, hedgeMode) {
   return data.some(p => Math.abs(parseFloat(p.positionAmt)) > 0);
 }
 
-async function setLeverage(symbol) {
-  const qs = `symbol=${symbol}&leverage=${CONFIG.LEVERAGE}&timestamp=${Date.now()}`;
+async function setLeverage(symbol, leverage) {
+  const qs = `symbol=${symbol}&leverage=${leverage}&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/leverage", `${qs}&signature=${sign(qs)}`);
 }
 
@@ -489,10 +490,18 @@ async function main() {
               console.log(`  [SKIP] ${sym} 이미 포지션 있음`);
               r.orderStatus = "이미 보유중";
             } else {
-              await setLeverage(sym);
-              const order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
-              console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty}`);
-              r.orderStatus = `매수 완료 | qty: ${order.origQty}`;
+              let order, usedLeverage = CONFIG.LEVERAGE;
+              try {
+                await setLeverage(sym, CONFIG.LEVERAGE);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
+              } catch (e1) {
+                console.log(`  [RETRY] ${sym} ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
+                usedLeverage = CONFIG.LEVERAGE_FALLBACK;
+                await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
+              }
+              console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
+              r.orderStatus = `매수 완료 | qty: ${order.origQty} | ${usedLeverage}x`;
             }
           } catch (e) {
             console.error(`  [ERR] ${sym} 주문 실패:`, e.message);
