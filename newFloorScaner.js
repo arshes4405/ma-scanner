@@ -1,6 +1,7 @@
 /**
  * Binance Futures 바닥 스캐너
  * 조건: MA 역배열 (MA99 > MA30 > MA10) + RSI(14) < 30
+ *       + 현재봉 양봉 + 현재봉 거래량 > 직전봉 거래량
  */
 
 const https = require("https");
@@ -141,12 +142,27 @@ async function getKlines(symbol) {
   const d = await httpGet(
     `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${CONFIG.INTERVAL}&limit=${CONFIG.CANDLE_LIMIT}`
   );
-  return d.map(k => parseFloat(k[4])); // close only
+  return d.map(k => ({
+    open:   parseFloat(k[1]),
+    close:  parseFloat(k[4]),
+    volume: parseFloat(k[7]), // quote asset volume (USDT)
+  }));
 }
 
 // ─── 분석 ─────────────────────────────────────────────────────────────────────
-function analyze(symbol, closes) {
-  if (closes.length < CONFIG.CANDLE_LIMIT) return null;
+function analyze(symbol, klines) {
+  if (klines.length < CONFIG.CANDLE_LIMIT) return null;
+
+  const closes  = klines.map(k => k.close);
+  const lastIdx = klines.length - 1;
+  const cur     = klines[lastIdx];
+  const prev    = klines[lastIdx - 1];
+
+  // 현재봉 양봉
+  if (cur.close <= cur.open) return null;
+
+  // 현재봉 거래량 > 직전봉 거래량
+  if (cur.volume <= prev.volume) return null;
 
   const ma10 = calcMA(closes, 10);
   const ma30 = calcMA(closes, 30);
@@ -159,15 +175,15 @@ function analyze(symbol, closes) {
   const rsi = calcRSI(closes, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
 
-  const cur = closes[closes.length - 1];
   return {
     symbol,
-    price: cur,
-    rsi:   +rsi.toFixed(1),
-    ma10:  +ma10.toFixed(4),
-    ma30:  +ma30.toFixed(4),
-    ma99:  +ma99.toFixed(4),
-    pctFromMA10: +(((cur - ma10) / ma10) * 100).toFixed(1),
+    price:      cur.close,
+    rsi:        +rsi.toFixed(1),
+    ma10:       +ma10.toFixed(4),
+    ma30:       +ma30.toFixed(4),
+    ma99:       +ma99.toFixed(4),
+    pctFromMA10: +(((cur.close - ma10) / ma10) * 100).toFixed(1),
+    volRatio:   +(cur.volume / prev.volume).toFixed(2), // 직전봉 대비 거래량 배율
   };
 }
 
@@ -183,7 +199,7 @@ async function sendTelegram(text) {
 
 function formatMessage(results, elapsed, total, skipped) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;30)</b>\n`;
+  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;30 + 양봉 + 거래량 돌파)</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
   if (skipped > 0) msg += `🔕 쿨다운 중 ${skipped}개 제외\n`;
@@ -202,7 +218,7 @@ function formatMessage(results, elapsed, total, skipped) {
     msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
     msg += `  RSI: <b>${r.rsi}</b> | MA10 대비 ${r.pctFromMA10}%\n`;
     msg += `  MA10: ${r.ma10} | MA30: ${r.ma30} | MA99: ${r.ma99}\n`;
-    msg += `  거래량: ${vol}\n`;
+    msg += `  거래량: ${vol} | 직전봉 대비 <b>${r.volRatio}x</b>\n`;
   }
 
   return msg;
@@ -227,8 +243,8 @@ async function main() {
     for (let i = 0; i < symbols.length; i++) {
       const sym = symbols[i];
       try {
-        const closes = await getKlines(sym);
-        const r = analyze(sym, closes);
+        const klines = await getKlines(sym);
+        const r = analyze(sym, klines);
         if (r) {
           r.vol = volMap[sym] || 0;
           if (isOnCooldown(state, sym)) {
