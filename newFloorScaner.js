@@ -322,24 +322,26 @@ async function main() {
         if (r) {
           r.vol = volMap[sym] || 0;
 
-          // 포지션 체크 후 매수
-          const alreadyIn = await hasOpenPosition(sym);
-          if (alreadyIn) {
-            console.log(`  [SKIP] ${sym} 이미 포지션 있음`);
-            r.orderStatus = "이미 보유중";
-          } else {
-            await setLeverage(sym);
-            const order = await placeMarketBuy(sym, r.price, stepSizes[sym]);
-            console.log(`  [BUY]  ${sym} 매수 완료 orderId: ${order.orderId} qty: ${order.origQty}`);
-            r.orderStatus = `매수 완료 | qty: ${order.origQty} | $${CONFIG.ORDER_USDT} / ${CONFIG.LEVERAGE}x`;
+          try {
+            const alreadyIn = await hasOpenPosition(sym);
+            if (alreadyIn) {
+              console.log(`  [SKIP] ${sym} 이미 포지션 있음`);
+              r.orderStatus = "이미 보유중";
+            } else {
+              await setLeverage(sym);
+              const order = await placeMarketBuy(sym, r.price, stepSizes[sym]);
+              console.log(`  [BUY]  ${sym} 매수 완료 orderId: ${order.orderId} qty: ${order.origQty}`);
+              r.orderStatus = `매수 완료 | qty: ${order.origQty} | $${CONFIG.ORDER_USDT} / ${CONFIG.LEVERAGE}x`;
+            }
+          } catch (e) {
+            console.error(`  [ERR]  ${sym} 주문 실패:`, e.message);
+            r.orderStatus = `주문 실패: ${e.message}`;
           }
 
-          results.push(r);
+          results.push(r); // 매수 성공/실패/스킵 모두 결과에 포함
         }
       } catch (e) {
-        // 주문 실패 시 결과에는 포함
-        console.error(`  [ERR]  ${sym}:`, e.message);
-        // analyze 결과가 있었다면 이미 results에 없으므로 별도 처리 불필요
+        console.error(`  [ERR]  ${sym} 스캔 오류:`, e.message);
       }
 
       if (i % 20 === 0) process.stdout.write(`\r진행: ${i}/${total} 발견: ${results.length}개`);
