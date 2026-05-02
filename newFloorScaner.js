@@ -172,7 +172,8 @@ function analyze(symbol, klines) {
   // MA 역배열: MA99 > MA30 > MA10
   if (!(ma99 > ma30 && ma30 > ma10)) return null;
 
-  const rsi = calcRSI(closes, CONFIG.RSI_PERIOD);
+  // 직전봉 기준 RSI (현재 양봉으로 RSI가 30 위로 올라온 케이스 포함)
+  const rsi = calcRSI(closes.slice(0, -1), CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
 
   return {
