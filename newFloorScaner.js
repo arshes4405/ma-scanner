@@ -230,9 +230,11 @@ async function placeMarketBuy(symbol, price, stepSize, hedgeMode) {
 }
 
 async function placeStopLoss(symbol, entryPrice, qty, tickSize, hedgeMode) {
-  const stopPrice = floorToStep(entryPrice * (1 - CONFIG.SL_PCT / 100), tickSize || 0.01);
+  const tick      = tickSize || 0.01;
+  const stopPrice = floorToStep(entryPrice * (1 - CONFIG.SL_PCT / 100), tick);
+  const limitPrice = floorToStep(stopPrice * 0.995, tick); // 트리거 후 체결 보장용 리밋
   const posSide   = hedgeMode ? "&positionSide=LONG" : "";
-  const qs = `symbol=${symbol}&side=SELL${posSide}&type=STOP_MARKET&stopPrice=${stopPrice}&quantity=${qty}&timestamp=${Date.now()}`;
+  const qs = `symbol=${symbol}&side=SELL${posSide}&type=STOP&price=${limitPrice}&stopPrice=${stopPrice}&quantity=${qty}&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
