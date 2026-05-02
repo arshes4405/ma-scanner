@@ -238,6 +238,47 @@ async function placeStopLoss(symbol, entryPrice, qty, tickSize, hedgeMode) {
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
+// ─── 소프트웨어 스탑로스 ──────────────────────────────────────────────────────
+async function checkAndClosePositions(hedgeMode) {
+  const qs    = `timestamp=${Date.now()}`;
+  const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
+
+  const positions = hedgeMode
+    ? pRisk.filter(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
+    : pRisk.filter(p => parseFloat(p.positionAmt) > 0);
+
+  if (!positions.length) return;
+
+  for (const pos of positions) {
+    const sym        = pos.symbol;
+    const entry      = parseFloat(pos.entryPrice);
+    const qty        = Math.abs(parseFloat(pos.positionAmt));
+    const markPrice  = parseFloat(pos.markPrice);
+    const dropPct    = ((markPrice - entry) / entry) * 100;
+
+    console.log(`  [POS] ${sym} 진입: $${entry} 현재: $${markPrice} 수익률: ${dropPct.toFixed(2)}%`);
+
+    if (dropPct <= -CONFIG.SL_PCT) {
+      console.log(`  [SL]  ${sym} -${CONFIG.SL_PCT}% 도달 → 시장가 청산`);
+      try {
+        const posSide = hedgeMode ? "&positionSide=LONG" : "";
+        const sellQs  = `symbol=${sym}&side=SELL${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+        const order   = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
+        console.log(`  [SL]  ${sym} 청산 완료 orderId: ${order.orderId}`);
+        await sendTelegram(
+          `🛑 <b>스탑로스 청산</b>\n` +
+          `<b>${sym}</b>  진입: $${entry} → 청산: $${markPrice}\n` +
+          `  수익률: ${dropPct.toFixed(2)}% | qty: ${qty}\n` +
+          `  orderId: ${order.orderId}`
+        );
+      } catch (e) {
+        console.error(`  [SL]  ${sym} 청산 실패:`, e.message);
+        await sendTelegram(`❌ ${sym} 스탑로스 청산 실패: ${e.message}`);
+      }
+    }
+  }
+}
+
 // ─── 분석 ─────────────────────────────────────────────────────────────────────
 function analyze(symbol, klines) {
   if (klines.length < CONFIG.CANDLE_LIMIT) return null;
@@ -421,6 +462,10 @@ async function main() {
 
   try {
     const hedgeMode = await getIsHedgeMode();
+
+    // 스탑로스 체크 (스캔보다 먼저)
+    await checkAndClosePositions(hedgeMode);
+
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const volMap  = await getVolumes();
     const symbols = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
