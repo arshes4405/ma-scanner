@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-02 v10";
+const VERSION = "2026-05-02 v11";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -197,6 +197,7 @@ async function getKlines(symbol) {
     `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${CONFIG.INTERVAL}&limit=${CONFIG.CANDLE_LIMIT}`
   );
   return d.map(k => ({
+    openTime: k[0],
     open:   parseFloat(k[1]),
     low:    parseFloat(k[3]),
     close:  parseFloat(k[4]),
@@ -293,7 +294,10 @@ function analyze(symbol, klines) {
   const prev    = klines[lastIdx - 1];
 
   if (cur.close <= cur.open) return null;
-  if (cur.volume <= prev.volume) return null;
+
+  // 거래량 돌파: 현재봉 경과 시간 기준 1시간 환산 비교
+  const elapsedRatio = Math.min(1, Math.max(10 / 60, (Date.now() - cur.openTime) / 3_600_000));
+  if ((cur.volume / elapsedRatio) <= prev.volume) return null;
 
   const ma10 = calcMA(closes, 10);
   const ma30 = calcMA(closes, 30);
@@ -320,7 +324,7 @@ function analyze(symbol, klines) {
     ma30:        +ma30.toFixed(4),
     ma99:        +ma99.toFixed(4),
     pctFromMA10: +(((cur.close - ma10) / ma10) * 100).toFixed(1),
-    volRatio:    +(cur.volume / prev.volume).toFixed(2),
+    volRatio:    +((cur.volume / elapsedRatio) / prev.volume).toFixed(2),
   };
 }
 
