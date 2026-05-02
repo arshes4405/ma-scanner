@@ -1,7 +1,7 @@
 /**
  * Binance Futures 바닥 스캐너 + 자동매수
  * 조건: MA 역배열 + 직전봉 RSI<30 + 직전봉 BB하단 이탈 + 현재봉 양봉 + 거래량 돌파
- * 자동매수: 조건 충족 + 미보유 시 20배 레버리지 $100 notional 매수
+ * 자동매수: 조건 충족 + 미보유 시 20배 레버리지 $100 notional 매수 + -3% 스탑로스
  */
 
 const https  = require("https");
@@ -21,9 +21,9 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      30,
-  ORDER_USDT:         100,  // notional (마진 = ORDER_USDT / LEVERAGE)
+  ORDER_USDT:         100,
   LEVERAGE:           20,
-  SL_PCT:             3,    // 스탑로스 % (진입가 대비 하락)
+  SL_PCT:             3,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };
 
@@ -117,23 +117,19 @@ function calcMA(closes, period) {
 
 function calcRSI(closes, period) {
   if (closes.length < period + 1) return null;
-
   let ag = 0, al = 0;
   const from = Math.max(1, closes.length - period * 3);
-
   for (let i = from; i < from + period; i++) {
     const diff = closes[i] - closes[i - 1];
     if (diff > 0) ag += diff; else al -= diff;
   }
   ag /= period;
   al /= period;
-
   for (let i = from + period; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
     ag = (ag * (period - 1) + Math.max(0,  diff)) / period;
     al = (al * (period - 1) + Math.max(0, -diff)) / period;
   }
-
   if (al === 0) return 100;
   return 100 - 100 / (1 + ag / al);
 }
@@ -205,9 +201,18 @@ async function getKlines(symbol) {
 }
 
 // ─── API (Signed) ─────────────────────────────────────────────────────────────
-async function hasOpenPosition(symbol) {
+async function getIsHedgeMode() {
+  const qs   = `timestamp=${Date.now()}`;
+  const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v1/positionSide/dual?${qs}&signature=${sign(qs)}`);
+  return data.dualSidePosition; // true = 헤지모드, false = 단방향
+}
+
+async function hasOpenPosition(symbol, hedgeMode) {
   const qs   = `symbol=${symbol}&timestamp=${Date.now()}`;
   const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
+  if (hedgeMode) {
+    return data.some(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0);
+  }
   return data.some(p => Math.abs(parseFloat(p.positionAmt)) > 0);
 }
 
@@ -216,16 +221,18 @@ async function setLeverage(symbol) {
   return httpPostSigned("/fapi/v1/leverage", `${qs}&signature=${sign(qs)}`);
 }
 
-async function placeMarketBuy(symbol, price, stepSize) {
-  const qty = floorToStep(CONFIG.ORDER_USDT / price, stepSize || 0.001);
+async function placeMarketBuy(symbol, price, stepSize, hedgeMode) {
+  const qty     = floorToStep(CONFIG.ORDER_USDT / price, stepSize || 0.001);
   if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
-  const qs = `symbol=${symbol}&side=BUY&positionSide=LONG&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+  const posSide = hedgeMode ? "&positionSide=LONG" : "";
+  const qs = `symbol=${symbol}&side=BUY${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
-async function placeStopLoss(symbol, entryPrice, tickSize) {
+async function placeStopLoss(symbol, entryPrice, tickSize, hedgeMode) {
   const stopPrice = floorToStep(entryPrice * (1 - CONFIG.SL_PCT / 100), tickSize || 0.01);
-  const qs = `symbol=${symbol}&side=SELL&positionSide=LONG&type=STOP_MARKET&stopPrice=${stopPrice}&closePosition=true&timestamp=${Date.now()}`;
+  const posSide   = hedgeMode ? "&positionSide=LONG" : "";
+  const qs = `symbol=${symbol}&side=SELL${posSide}&type=STOP_MARKET&stopPrice=${stopPrice}&closePosition=true&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
@@ -238,27 +245,20 @@ function analyze(symbol, klines) {
   const cur     = klines[lastIdx];
   const prev    = klines[lastIdx - 1];
 
-  // 현재봉 양봉
   if (cur.close <= cur.open) return null;
-
-  // 현재봉 거래량 > 직전봉 거래량
   if (cur.volume <= prev.volume) return null;
 
   const ma10 = calcMA(closes, 10);
   const ma30 = calcMA(closes, 30);
   const ma99 = calcMA(closes, 99);
   if (!ma10 || !ma30 || !ma99) return null;
-
-  // MA 역배열: MA99 > MA30 > MA10
   if (!(ma99 > ma30 && ma30 > ma10)) return null;
 
   const prevCloses = closes.slice(0, -1);
 
-  // 직전봉 기준 RSI < 30
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
 
-  // 직전봉이 볼린저 하단(20, 2) 아래로 이탈
   const bbLower = calcBollingerLower(prevCloses);
   if (!bbLower || prevCloses[prevCloses.length - 1] >= bbLower) return null;
 
@@ -309,15 +309,18 @@ function formatMessage(results, elapsed, total) {
   return msg;
 }
 
-// ─── 테스트 매수 ────────────────────────────────────────────────────────────��─
+// ─── 테스트 매수 ──────────────────────────────────────────────────────────────
 async function testBuy(symbol = "ETHUSDT") {
   console.log(`\n=== [TEST BUY] ${symbol} ===`);
   try {
+    const hedgeMode = await getIsHedgeMode();
+    console.log(`  포지션 모드: ${hedgeMode ? "헤지모드" : "단방향"}`);
+
     const ticker = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/ticker/price?symbol=${symbol}`);
     const price  = parseFloat(ticker.price);
     console.log(`  현재가: $${price}`);
 
-    const alreadyIn = await hasOpenPosition(symbol);
+    const alreadyIn = await hasOpenPosition(symbol, hedgeMode);
     if (alreadyIn) {
       console.log(`  이미 포지션 있음 → 매수 스킵`);
       await sendTelegram(`⏭ [TEST] ${symbol} 이미 포지션 있음`);
@@ -327,11 +330,11 @@ async function testBuy(symbol = "ETHUSDT") {
     await setLeverage(symbol);
     console.log(`  레버리지 ${CONFIG.LEVERAGE}x 설정 완료`);
 
-    const { symbols: _, stepSizes, tickSizes } = await getSymbolsInfo();
-    const order = await placeMarketBuy(symbol, price, stepSizes[symbol]);
+    const { stepSizes, tickSizes } = await getSymbolsInfo();
+    const order   = await placeMarketBuy(symbol, price, stepSizes[symbol], hedgeMode);
     console.log(`  매수 완료! orderId: ${order.orderId} | qty: ${order.origQty}`);
 
-    const sl    = await placeStopLoss(symbol, price, tickSizes[symbol]);
+    const sl      = await placeStopLoss(symbol, price, tickSizes[symbol], hedgeMode);
     const slPrice = floorToStep(price * (1 - CONFIG.SL_PCT / 100), tickSizes[symbol] || 0.01);
     console.log(`  스탑로스 설정! orderId: ${sl.orderId} | stopPrice: $${slPrice}`);
 
@@ -343,13 +346,13 @@ async function testBuy(symbol = "ETHUSDT") {
       `  orderId: ${order.orderId}`
     );
   } catch (e) {
-    console.error(`  매수 실패:`, e.message);
+    console.error(`  실패:`, e.message);
     await sendTelegram(`❌ [TEST] ${symbol} 매수 실패: ${e.message}`);
   }
   console.log(`=== [TEST BUY] 완료 ===\n`);
 }
 
-// ─── 메인 ─────────────────────────���─────────────────────────────────���─────────
+// ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
   const startTime = Date.now();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작`);
@@ -357,13 +360,13 @@ async function main() {
   // ★ 테스트 매수 - 확인 후 제거
   await testBuy("ETHUSDT");
   process.exit(0);
-  // ★★★★★★★★★★��★★★★★★★★
 
-  loadState(); // 향후 쿨다운 복원 시 사용
+  loadState();
 
   try {
+    const hedgeMode = await getIsHedgeMode();
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
-    const volMap = await getVolumes();
+    const volMap  = await getVolumes();
     const symbols = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
     const total   = symbols.length;
@@ -378,28 +381,28 @@ async function main() {
           r.vol = volMap[sym] || 0;
 
           try {
-            const alreadyIn = await hasOpenPosition(sym);
+            const alreadyIn = await hasOpenPosition(sym, hedgeMode);
             if (alreadyIn) {
               console.log(`  [SKIP] ${sym} 이미 포지션 있음`);
               r.orderStatus = "이미 보유중";
             } else {
               await setLeverage(sym);
-              const order   = await placeMarketBuy(sym, r.price, stepSizes[sym]);
-              const sl      = await placeStopLoss(sym, r.price, tickSizes[sym]);
+              const order   = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
+              const sl      = await placeStopLoss(sym, r.price, tickSizes[sym], hedgeMode);
               const slPrice = floorToStep(r.price * (1 - CONFIG.SL_PCT / 100), tickSizes[sym] || 0.01);
-              console.log(`  [BUY]  ${sym} 매수 완료 orderId: ${order.orderId} qty: ${order.origQty}`);
-              console.log(`  [SL]   ${sym} 스탑로스 $${slPrice} orderId: ${sl.orderId}`);
+              console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty}`);
+              console.log(`  [SL]  ${sym} stopPrice: $${slPrice} orderId: ${sl.orderId}`);
               r.orderStatus = `매수 완료 | qty: ${order.origQty} | SL: $${slPrice} (-${CONFIG.SL_PCT}%)`;
             }
           } catch (e) {
-            console.error(`  [ERR]  ${sym} 주문 실패:`, e.message);
+            console.error(`  [ERR] ${sym} 주문 실패:`, e.message);
             r.orderStatus = `주문 실패: ${e.message}`;
           }
 
-          results.push(r); // 매수 성공/실패/스킵 모두 결과에 포함
+          results.push(r);
         }
       } catch (e) {
-        console.error(`  [ERR]  ${sym} 스캔 오류:`, e.message);
+        console.error(`  [ERR] ${sym} 스캔 오류:`, e.message);
       }
 
       if (i % 20 === 0) process.stdout.write(`\r진행: ${i}/${total} 발견: ${results.length}개`);
