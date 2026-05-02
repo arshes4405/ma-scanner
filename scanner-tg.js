@@ -10,7 +10,7 @@ const CONFIG = {
   TG_CHAT_ID:        process.env.TG_CHAT_ID || "133371996",
   BASE_URL:          "https://fapi.binance.com",
   INTERVAL:          "1h",
-  WINDOW_HOURS:      2,       // 현재봉 + 이전봉만 체크
+  WINDOW_HOURS:      1,       // 현재봉 + 이전봉만 체크
   MIN_CANDLE_CHANGE: 0.5,     // 돌파 봉 0.5% 이상 (완화)
   MODE:              "both",  // ma30 / ma99 / both
   MIN_VOLUME_USDT:   1_000_000,
