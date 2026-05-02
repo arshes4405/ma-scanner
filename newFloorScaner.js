@@ -20,7 +20,7 @@ const CONFIG = {
   MIN_VOLUME_USDT:    1_000_000,
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
-  RSI_THRESHOLD:      30,
+  RSI_THRESHOLD:      40,
   ORDER_USDT:         100,  // notional (마진 = ORDER_USDT / LEVERAGE)
   LEVERAGE:           20,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
@@ -277,7 +277,7 @@ async function sendTelegram(text) {
 
 function formatMessage(results, elapsed, total) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;30 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
+  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;40 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
   msg += `─────────────────\n`;
