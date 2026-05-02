@@ -229,10 +229,10 @@ async function placeMarketBuy(symbol, price, stepSize, hedgeMode) {
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
-async function placeStopLoss(symbol, entryPrice, tickSize, hedgeMode) {
+async function placeStopLoss(symbol, entryPrice, qty, tickSize, hedgeMode) {
   const stopPrice = floorToStep(entryPrice * (1 - CONFIG.SL_PCT / 100), tickSize || 0.01);
   const posSide   = hedgeMode ? "&positionSide=LONG" : "";
-  const qs = `symbol=${symbol}&side=SELL${posSide}&type=STOP_MARKET&stopPrice=${stopPrice}&closePosition=true&timestamp=${Date.now()}`;
+  const qs = `symbol=${symbol}&side=SELL${posSide}&type=STOP_MARKET&stopPrice=${stopPrice}&quantity=${qty}&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
@@ -334,7 +334,7 @@ async function testBuy(symbol = "ETHUSDT") {
     const order   = await placeMarketBuy(symbol, price, stepSizes[symbol], hedgeMode);
     console.log(`  매수 완료! orderId: ${order.orderId} | qty: ${order.origQty}`);
 
-    const sl      = await placeStopLoss(symbol, price, tickSizes[symbol], hedgeMode);
+    const sl      = await placeStopLoss(symbol, price, order.origQty, tickSizes[symbol], hedgeMode);
     const slPrice = floorToStep(price * (1 - CONFIG.SL_PCT / 100), tickSizes[symbol] || 0.01);
     console.log(`  스탑로스 설정! orderId: ${sl.orderId} | stopPrice: $${slPrice}`);
 
@@ -388,7 +388,7 @@ async function main() {
             } else {
               await setLeverage(sym);
               const order   = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
-              const sl      = await placeStopLoss(sym, r.price, tickSizes[sym], hedgeMode);
+              const sl      = await placeStopLoss(sym, r.price, order.origQty, tickSizes[sym], hedgeMode);
               const slPrice = floorToStep(r.price * (1 - CONFIG.SL_PCT / 100), tickSizes[sym] || 0.01);
               console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty}`);
               console.log(`  [SL]  ${sym} stopPrice: $${slPrice} orderId: ${sl.orderId}`);
