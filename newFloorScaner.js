@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-02 v9";
+const VERSION = "2026-05-02 v10";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -22,7 +22,7 @@ const CONFIG = {
   MIN_VOLUME_USDT:    1_000_000,
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
-  RSI_THRESHOLD:      50,
+  RSI_THRESHOLD:      35,
   ORDER_USDT:         500,
   LEVERAGE:           20,
   LEVERAGE_FALLBACK:  10,
@@ -336,7 +336,7 @@ async function sendTelegram(text) {
 
 function formatMessage(results, elapsed, total) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;50 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
+  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;35 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
   msg += `─────────────────\n`;
