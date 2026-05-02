@@ -9,6 +9,8 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
+const VERSION = "2026-05-02 v5";
+
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
   TG_CHAT_ID:         process.env.TG_CHAT_ID          || "133371996",
@@ -456,7 +458,7 @@ async function testBuy(symbol = "ETHUSDT") {
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
   const startTime = Date.now();
-  console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작`);
+  console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작 (${VERSION})`);
 
   loadState();
 
