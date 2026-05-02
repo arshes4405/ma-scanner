@@ -320,17 +320,35 @@ async function testBuy(symbol = "ETHUSDT") {
     const price  = parseFloat(ticker.price);
     console.log(`  현재가: $${price}`);
 
-    const alreadyIn = await hasOpenPosition(symbol, hedgeMode);
-    if (alreadyIn) {
-      console.log(`  이미 포지션 있음 → 매수 스킵`);
-      await sendTelegram(`⏭ [TEST] ${symbol} 이미 포지션 있음`);
+    const { stepSizes, tickSizes } = await getSymbolsInfo();
+
+    // 포지션 조회
+    const qs2  = `symbol=${symbol}&timestamp=${Date.now()}`;
+    const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs2}&signature=${sign(qs2)}`);
+    const pos   = hedgeMode
+      ? pRisk.find(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
+      : pRisk.find(p => Math.abs(parseFloat(p.positionAmt)) > 0);
+
+    if (pos) {
+      // 이미 포지션 있음 → 스탑로스만 설정
+      const entryPrice = parseFloat(pos.entryPrice);
+      const qty        = Math.abs(parseFloat(pos.positionAmt));
+      const slPrice    = floorToStep(entryPrice * (1 - CONFIG.SL_PCT / 100), tickSizes[symbol] || 0.01);
+      console.log(`  이미 포지션 있음 → 스탑로스만 설정 (진입가: $${entryPrice}, qty: ${qty})`);
+      const sl = await placeStopLoss(symbol, entryPrice, qty, tickSizes[symbol], hedgeMode);
+      console.log(`  스탑로스 설정! orderId: ${sl.orderId} | stopPrice: $${slPrice}`);
+      await sendTelegram(
+        `🛑 [TEST] ${symbol} 스탑로스 설정\n` +
+        `  진입가: $${entryPrice} | qty: ${qty}\n` +
+        `  stopPrice: $${slPrice} (-${CONFIG.SL_PCT}%)\n` +
+        `  orderId: ${sl.orderId}`
+      );
       return;
     }
 
     await setLeverage(symbol);
     console.log(`  레버리지 ${CONFIG.LEVERAGE}x 설정 완료`);
 
-    const { stepSizes, tickSizes } = await getSymbolsInfo();
     const order   = await placeMarketBuy(symbol, price, stepSizes[symbol], hedgeMode);
     console.log(`  매수 완료! orderId: ${order.orderId} | qty: ${order.origQty}`);
 
