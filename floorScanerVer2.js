@@ -1,0 +1,269 @@
+/**
+ * Binance Futures 바닥 스캐너 Ver2 - 조건별 필터링 로그 버전
+ * 자동매수 없음, 각 코인이 어느 조건에서 탈락하는지 확인용
+ */
+
+const https  = require("https");
+const fs     = require("fs");
+const path   = require("path");
+
+const VERSION = "floorScanerVer2 v1";
+
+const CONFIG = {
+  TG_TOKEN:        process.env.TG_TOKEN   || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
+  TG_CHAT_ID:      process.env.TG_CHAT_ID  || "133371996",
+  BASE_URL:        "https://fapi.binance.com",
+  INTERVAL:        "1h",
+  CANDLE_LIMIT:    150,
+  MIN_VOLUME_USDT: 1_000_000,
+  REQUEST_DELAY:   120,
+  RSI_PERIOD:      14,
+  RSI_THRESHOLD:   35,
+  LOG_FILE:        path.join(__dirname, "floor_v2_log.txt"),
+};
+
+// ─── 유틸 ─────────────────────────────────────────────────────────────────────
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}`));
+        else resolve(JSON.parse(data));
+      });
+    }).on("error", reject);
+  });
+}
+
+function httpsPost(hostname, path, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = https.request(
+      { hostname, path, method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
+      (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => resolve(JSON.parse(d))); }
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ─── 로그 ─────────────────────────────────────────────────────────────────────
+const logLines = [];
+function log(line) {
+  console.log(line);
+  logLines.push(line);
+}
+
+function saveLog() {
+  try {
+    const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    const header = `\n${"=".repeat(60)}\n${ts}\n${"=".repeat(60)}\n`;
+    fs.appendFileSync(CONFIG.LOG_FILE, header + logLines.join("\n") + "\n");
+  } catch (_) {}
+}
+
+// ─── 지표 계산 ────────────────────────────────────────────────────────────────
+function calcMA(closes, period) {
+  if (closes.length < period) return null;
+  return closes.slice(-period).reduce((s, v) => s + v, 0) / period;
+}
+
+function calcRSI(closes, period) {
+  if (closes.length < period + 1) return null;
+  let ag = 0, al = 0;
+  const from = Math.max(1, closes.length - period * 3);
+  for (let i = from; i < from + period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) ag += diff; else al -= diff;
+  }
+  ag /= period;
+  al /= period;
+  for (let i = from + period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    ag = (ag * (period - 1) + Math.max(0,  diff)) / period;
+    al = (al * (period - 1) + Math.max(0, -diff)) / period;
+  }
+  if (al === 0) return 100;
+  return 100 - 100 / (1 + ag / al);
+}
+
+function calcBollingerLower(closes, period = 20, mult = 2) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const mean  = slice.reduce((s, v) => s + v, 0) / period;
+  const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
+  return mean - mult * std;
+}
+
+// ─── API ─────────────────────────────────────────────────────────────────────
+async function getAllSymbols() {
+  const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
+  return d.symbols
+    .filter(s => s.quoteAsset === "USDT" && s.contractType === "PERPETUAL" && s.status === "TRADING")
+    .map(s => s.symbol);
+}
+
+async function getVolumes() {
+  const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/ticker/24hr`);
+  const m = {};
+  for (const t of d) m[t.symbol] = parseFloat(t.quoteVolume);
+  return m;
+}
+
+async function getKlines(symbol) {
+  const d = await httpGet(
+    `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${CONFIG.INTERVAL}&limit=${CONFIG.CANDLE_LIMIT}`
+  );
+  return d.map(k => ({
+    open:   parseFloat(k[1]),
+    low:    parseFloat(k[3]),
+    close:  parseFloat(k[4]),
+    volume: parseFloat(k[7]),
+  }));
+}
+
+// ─── 분석 (조건별 결과 반환) ───────────────────────────────────────────────────
+function analyzeWithLog(symbol, klines) {
+  if (klines.length < CONFIG.CANDLE_LIMIT) return { pass: false, reason: "캔들 부족" };
+
+  const closes  = klines.map(k => k.close);
+  const lastIdx = klines.length - 1;
+  const cur     = klines[lastIdx];
+  const prev    = klines[lastIdx - 1];
+
+  // 1. 양봉
+  if (cur.close <= cur.open)
+    return { pass: false, reason: `음봉 (open:${cur.open.toFixed(4)} close:${cur.close.toFixed(4)})` };
+
+  // 2. 거래량 돌파
+  const volRatio = cur.volume / prev.volume;
+  if (volRatio <= 1)
+    return { pass: false, reason: `거래량 미달 (${volRatio.toFixed(2)}x)` };
+
+  // 3. MA 역배열
+  const ma10 = calcMA(closes, 10);
+  const ma30 = calcMA(closes, 30);
+  const ma99 = calcMA(closes, 99);
+  if (!ma10 || !ma30 || !ma99)
+    return { pass: false, reason: "MA 계산 불가" };
+  if (!(ma99 > ma30 && ma30 > ma10))
+    return { pass: false, reason: `MA 역배열 아님 (10:${ma10.toFixed(2)} 30:${ma30.toFixed(2)} 99:${ma99.toFixed(2)})` };
+
+  // 4. RSI (직전봉)
+  const prevCloses = closes.slice(0, -1);
+  const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
+  if (rsi === null)
+    return { pass: false, reason: "RSI 계산 불가" };
+  if (rsi >= CONFIG.RSI_THRESHOLD)
+    return { pass: false, reason: `RSI ${rsi.toFixed(1)} (기준 ${CONFIG.RSI_THRESHOLD} 초과)` };
+
+  // 5. BB 하단 이탈 (직전봉 저가)
+  const bbLower = calcBollingerLower(prevCloses);
+  if (!bbLower)
+    return { pass: false, reason: "BB 계산 불가" };
+  const prevLow = prev.low;
+  if (prevLow >= bbLower)
+    return { pass: false, reason: `BB하단 미이탈 (low:${prevLow.toFixed(4)} > bb:${bbLower.toFixed(4)})` };
+
+  return {
+    pass: true,
+    price: cur.close, rsi: +rsi.toFixed(1),
+    bbLower: +bbLower.toFixed(4),
+    ma10: +ma10.toFixed(4), ma30: +ma30.toFixed(4), ma99: +ma99.toFixed(4),
+    volRatio: +volRatio.toFixed(2),
+  };
+}
+
+// ─── 텔레그램 ─────────────────────────────────────────────────────────────────
+async function sendTelegram(text) {
+  try {
+    await httpsPost("api.telegram.org",
+      `/bot${CONFIG.TG_TOKEN}/sendMessage`,
+      { chat_id: CONFIG.TG_CHAT_ID, text, parse_mode: "HTML", disable_web_page_preview: true }
+    );
+  } catch (e) { console.error("[TG] 전송 실패:", e.message); }
+}
+
+// ─── 메인 ─────────────────────────────────────────────────────────────────────
+async function main() {
+  const startTime = Date.now();
+  log(`[${new Date().toLocaleString("ko-KR")}] ${VERSION} 시작`);
+
+  // 조건별 카운터
+  const counter = { 양봉: 0, 거래량: 0, MA역배열: 0, RSI: 0, BB하단: 0, 통과: 0 };
+  const passed = [];
+
+  try {
+    const allSymbols = await getAllSymbols();
+    const volMap     = await getVolumes();
+    const symbols    = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
+
+    log(`총 ${symbols.length}개 스캔 시작\n`);
+
+    for (let i = 0; i < symbols.length; i++) {
+      const sym = symbols[i];
+      try {
+        const klines = await getKlines(sym);
+        const result = analyzeWithLog(sym, klines);
+
+        if (result.pass) {
+          counter["통과"]++;
+          passed.push({ symbol: sym, ...result, vol: volMap[sym] });
+          log(`✅ ${sym.padEnd(12)} 통과! RSI:${result.rsi} BB:${result.bbLower} vol:${result.volRatio}x`);
+        } else {
+          // 탈락 이유 첫 단어로 카운터 분류
+          const key = Object.keys(counter).find(k => result.reason.includes(k));
+          if (key) counter[key]++;
+          log(`   ${sym.padEnd(12)} ❌ ${result.reason}`);
+        }
+      } catch (_) {}
+
+      if (i % 20 === 0) process.stdout.write(`\r진행: ${i}/${symbols.length}`);
+      await sleep(CONFIG.REQUEST_DELAY);
+    }
+
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    log(`\n${"─".repeat(50)}`);
+    log(`[조건별 탈락 요약] (${elapsed}초)`);
+    log(`  양봉 아님    : ${counter["양봉"]}개`);
+    log(`  거래량 미달  : ${counter["거래량"]}개`);
+    log(`  MA역배열 아님: ${counter["MA역배열"]}개`);
+    log(`  RSI 초과     : ${counter["RSI"]}개`);
+    log(`  BB하단 미이탈: ${counter["BB하단"]}개`);
+    log(`  최종 통과    : ${counter["통과"]}개`);
+    log(`${"─".repeat(50)}`);
+
+    saveLog();
+
+    if (!passed.length) {
+      await sendTelegram(`🔍 [Ver2] 조건 통과 종목 없음\n${Object.entries(counter).map(([k,v]) => `  ${k}: ${v}`).join("\n")}`);
+      process.exit(0); return;
+    }
+
+    // 텔레그램 요약
+    const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    let msg = `🔍 <b>바닥 스캐너 Ver2</b>  ${ts}\n`;
+    msg += `📊 ${symbols.length}개 스캔 · ${passed.length}개 통과 · ${elapsed}초\n`;
+    msg += `<code>양봉X:${counter["양봉"]} 거래량X:${counter["거래량"]} MA역배열X:${counter["MA역배열"]} RSI초과:${counter["RSI"]} BBX:${counter["BB하단"]}</code>\n`;
+    msg += `─────────────────\n`;
+    for (const r of passed.sort((a, b) => a.rsi - b.rsi)) {
+      const vol = r.vol >= 1e9 ? (r.vol/1e9).toFixed(1)+"B" : (r.vol/1e6).toFixed(0)+"M";
+      msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
+      msg += `  RSI: <b>${r.rsi}</b> | BB하단: ${r.bbLower} | vol: ${r.volRatio}x | ${vol}\n`;
+    }
+    await sendTelegram(msg);
+
+  } catch (e) {
+    console.error("에러:", e.message);
+    await sendTelegram(`❌ Ver2 오류: ${e.message}`);
+  }
+
+  process.exit(0);
+}
+
+main();
