@@ -10,8 +10,6 @@ const path   = require("path");
 const VERSION = "floorScanerVer2 v1";
 
 const CONFIG = {
-  TG_TOKEN:        process.env.TG_TOKEN   || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
-  TG_CHAT_ID:      process.env.TG_CHAT_ID  || "133371996",
   BASE_URL:        "https://fapi.binance.com",
   INTERVAL:        "1h",
   CANDLE_LIMIT:    150,
@@ -33,20 +31,6 @@ function httpGet(url) {
         else resolve(JSON.parse(data));
       });
     }).on("error", reject);
-  });
-}
-
-function httpsPost(hostname, path, body) {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body);
-    const req = https.request(
-      { hostname, path, method: "POST",
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
-      (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => resolve(JSON.parse(d))); }
-    );
-    req.on("error", reject);
-    req.write(payload);
-    req.end();
   });
 }
 
@@ -179,15 +163,6 @@ function analyzeWithLog(symbol, klines) {
   };
 }
 
-// ─── 텔레그램 ─────────────────────────────────────────────────────────────────
-async function sendTelegram(text) {
-  try {
-    await httpsPost("api.telegram.org",
-      `/bot${CONFIG.TG_TOKEN}/sendMessage`,
-      { chat_id: CONFIG.TG_CHAT_ID, text, parse_mode: "HTML", disable_web_page_preview: true }
-    );
-  } catch (e) { console.error("[TG] 전송 실패:", e.message); }
-}
 
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
@@ -240,27 +215,16 @@ async function main() {
 
     saveLog();
 
-    if (!passed.length) {
-      await sendTelegram(`🔍 [Ver2] 조건 통과 종목 없음\n${Object.entries(counter).map(([k,v]) => `  ${k}: ${v}`).join("\n")}`);
-      process.exit(0); return;
+    if (passed.length) {
+      log("\n[최종 통과 종목]");
+      for (const r of passed.sort((a, b) => a.rsi - b.rsi)) {
+        const vol = r.vol >= 1e9 ? (r.vol/1e9).toFixed(1)+"B" : (r.vol/1e6).toFixed(0)+"M";
+        log(`  ${r.symbol.padEnd(12)} RSI:${r.rsi} BB:${r.bbLower} vol:${r.volRatio}x ${vol}`);
+      }
     }
-
-    // 텔레그램 요약
-    const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-    let msg = `🔍 <b>바닥 스캐너 Ver2</b>  ${ts}\n`;
-    msg += `📊 ${symbols.length}개 스캔 · ${passed.length}개 통과 · ${elapsed}초\n`;
-    msg += `<code>양봉X:${counter["양봉"]} 거래량X:${counter["거래량"]} MA역배열X:${counter["MA역배열"]} RSI초과:${counter["RSI"]} BBX:${counter["BB하단"]}</code>\n`;
-    msg += `─────────────────\n`;
-    for (const r of passed.sort((a, b) => a.rsi - b.rsi)) {
-      const vol = r.vol >= 1e9 ? (r.vol/1e9).toFixed(1)+"B" : (r.vol/1e6).toFixed(0)+"M";
-      msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
-      msg += `  RSI: <b>${r.rsi}</b> | BB하단: ${r.bbLower} | vol: ${r.volRatio}x | ${vol}\n`;
-    }
-    await sendTelegram(msg);
 
   } catch (e) {
     console.error("에러:", e.message);
-    await sendTelegram(`❌ Ver2 오류: ${e.message}`);
   }
 
   process.exit(0);
