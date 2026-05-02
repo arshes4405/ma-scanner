@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-02 v11";
+const VERSION = "2026-05-02 v12";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -299,12 +299,6 @@ function analyze(symbol, klines) {
   const elapsedRatio = Math.min(1, Math.max(10 / 60, (Date.now() - cur.openTime) / 3_600_000));
   if ((cur.volume / elapsedRatio) <= prev.volume) return null;
 
-  const ma10 = calcMA(closes, 10);
-  const ma30 = calcMA(closes, 30);
-  const ma99 = calcMA(closes, 99);
-  if (!ma10 || !ma30 || !ma99) return null;
-  if (!(ma99 > ma30 && ma30 > ma10)) return null;
-
   const prevCloses = closes.slice(0, -1);
 
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
@@ -320,10 +314,6 @@ function analyze(symbol, klines) {
     price:       cur.close,
     rsi:         +rsi.toFixed(1),
     bbLower:     +bbLower.toFixed(4),
-    ma10:        +ma10.toFixed(4),
-    ma30:        +ma30.toFixed(4),
-    ma99:        +ma99.toFixed(4),
-    pctFromMA10: +(((cur.close - ma10) / ma10) * 100).toFixed(1),
     volRatio:    +((cur.volume / elapsedRatio) / prev.volume).toFixed(2),
   };
 }
@@ -351,7 +341,6 @@ function formatMessage(results, elapsed, total) {
     const vol = r.vol >= 1e9 ? (r.vol / 1e9).toFixed(1) + "B" : (r.vol / 1e6).toFixed(0) + "M";
     msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
     msg += `  RSI(직전): <b>${r.rsi}</b> | BB하단: ${r.bbLower}\n`;
-    msg += `  MA10: ${r.ma10} | MA30: ${r.ma30} | MA99: ${r.ma99}\n`;
     msg += `  거래량: ${vol} | 직전봉 대비 <b>${r.volRatio}x</b>\n`;
     if (r.orderStatus) {
       const icon = r.orderStatus.startsWith("매수 완료") ? "✅" : r.orderStatus.startsWith("이미") ? "⏭" : "❌";
