@@ -129,16 +129,7 @@ function analyzeWithLog(symbol, klines) {
   if (volRatio <= 1)
     return { pass: false, reason: `거래량 미달 (${volRatio.toFixed(2)}x)` };
 
-  // 3. MA 역배열
-  const ma10 = calcMA(closes, 10);
-  const ma30 = calcMA(closes, 30);
-  const ma99 = calcMA(closes, 99);
-  if (!ma10 || !ma30 || !ma99)
-    return { pass: false, reason: "MA 계산 불가" };
-  if (!(ma99 > ma30 && ma30 > ma10))
-    return { pass: false, reason: `MA 역배열 아님 (10:${ma10.toFixed(2)} 30:${ma30.toFixed(2)} 99:${ma99.toFixed(2)})` };
-
-  // 4. RSI (직전봉)
+  // 3. RSI (직전봉)
   const prevCloses = closes.slice(0, -1);
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null)
@@ -158,7 +149,6 @@ function analyzeWithLog(symbol, klines) {
     pass: true,
     price: cur.close, rsi: +rsi.toFixed(1),
     bbLower: +bbLower.toFixed(4),
-    ma10: +ma10.toFixed(4), ma30: +ma30.toFixed(4), ma99: +ma99.toFixed(4),
     volRatio: +volRatio.toFixed(2),
   };
 }
@@ -170,7 +160,7 @@ async function main() {
   log(`[${new Date().toLocaleString("ko-KR")}] ${VERSION} 시작`);
 
   // 조건별 카운터
-  const counter = { 음봉: 0, 거래량: 0, "MA 역배열": 0, RSI: 0, BB하단: 0, 통과: 0 };
+  const counter = { 음봉: 0, 거래량: 0, RSI: 0, BB하단: 0, 통과: 0 };
   const passed = [];
 
   try {
@@ -207,7 +197,6 @@ async function main() {
     log(`[조건별 탈락 요약] (${elapsed}초)`);
     log(`  양봉 아님    : ${counter["음봉"]}개`);
     log(`  거래량 미달  : ${counter["거래량"]}개`);
-    log(`  MA역배열 아님: ${counter["MA 역배열"]}개`);
     log(`  RSI 초과     : ${counter["RSI"]}개`);
     log(`  BB하단 미이탈: ${counter["BB하단"]}개`);
     log(`  최종 통과    : ${counter["통과"]}개`);
