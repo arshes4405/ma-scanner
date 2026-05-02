@@ -1,23 +1,30 @@
 /**
  * Binance Futures MA 돌파 스캐너 + 텔레그램 알림
- * Termux cron 전용 - 실행 후 자동 종료
+ * 10분마다 실행, 중복 알림 방지 (2시간 쿨다운)
  */
 
 const https = require("https");
+const fs    = require("fs");
+const path  = require("path");
 
 const CONFIG = {
   TG_TOKEN:          process.env.TG_TOKEN   || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
   TG_CHAT_ID:        process.env.TG_CHAT_ID || "133371996",
   BASE_URL:          "https://fapi.binance.com",
   INTERVAL:          "1h",
-  WINDOW_HOURS:      1,       // 현재봉 + 이전봉만 체크
-  MIN_CANDLE_CHANGE: 0.5,     // 돌파 봉 0.5% 이상 (완화)
-  MODE:              "both",  // ma30 / ma99 / both
+  WINDOW_HOURS:      1,        // 현재봉 + 이전봉
+  MIN_CANDLE_CHANGE: 0.5,
+  MODE:              "both",
   MIN_VOLUME_USDT:   1_000_000,
   CANDLE_LIMIT:      130,
   REQUEST_DELAY:     120,
+  // 같은 종목 재알림 방지 시간 (ms) - 2시간
+  COOLDOWN_MS:       2 * 60 * 60 * 1000,
+  // 쿨다운 상태 저장 파일
+  STATE_FILE:        path.join(__dirname, "alert_state.json"),
 };
 
+// ─── 유틸 ─────────────────────────────────────────────────────────────────────
 function httpGet(url) {
   return new Promise((resolve, reject) => {
     https.get(url, (res) => {
@@ -54,6 +61,39 @@ function calcMAat(closes, period, endIdx) {
   return s / period;
 }
 
+// ─── 중복 알림 방지 ───────────────────────────────────────────────────────────
+function loadState() {
+  try {
+    if (fs.existsSync(CONFIG.STATE_FILE)) {
+      return JSON.parse(fs.readFileSync(CONFIG.STATE_FILE, "utf8"));
+    }
+  } catch (_) {}
+  return {};
+}
+
+function saveState(state) {
+  try {
+    fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(state), "utf8");
+  } catch (_) {}
+}
+
+function isOnCooldown(state, symbol) {
+  const last = state[symbol];
+  if (!last) return false;
+  return Date.now() - last < CONFIG.COOLDOWN_MS;
+}
+
+function updateState(state, symbols) {
+  const now = Date.now();
+  for (const sym of symbols) state[sym] = now;
+  // 오래된 항목 정리 (24시간 이상)
+  for (const sym of Object.keys(state)) {
+    if (now - state[sym] > 24 * 60 * 60 * 1000) delete state[sym];
+  }
+  return state;
+}
+
+// ─── API ─────────────────────────────────────────────────────────────────────
 async function getAllSymbols() {
   const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
   return d.symbols
@@ -75,6 +115,7 @@ async function getKlines(symbol) {
   return d.map(k => ({ open: parseFloat(k[1]), close: parseFloat(k[4]) }));
 }
 
+// ─── 분석 ─────────────────────────────────────────────────────────────────────
 function analyze(symbol, klines) {
   const len = klines.length;
   if (len < 101 + CONFIG.WINDOW_HOURS) return null;
@@ -89,7 +130,7 @@ function analyze(symbol, klines) {
   if (!(ma99 > ma30 && ma30 > ma10)) return null;
 
   const searchStart = Math.max(lastIdx - CONFIG.WINDOW_HOURS, 99);
-  const searchEnd   = lastIdx; // 현재 봉 포함
+  const searchEnd   = lastIdx;
 
   let bestMA30 = null, bestMA99 = null;
 
@@ -136,6 +177,7 @@ function analyze(symbol, klines) {
   };
 }
 
+// ─── 텔레그램 ─────────────────────────────────────────────────────────────────
 async function sendTelegram(text) {
   try {
     await httpsPost("api.telegram.org",
@@ -145,7 +187,7 @@ async function sendTelegram(text) {
   } catch (e) { console.error("[TG] 전송 실패:", e.message); }
 }
 
-function formatMessage(results, elapsed, total) {
+function formatMessage(results, elapsed, total, skipped) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
   const with99 = results.filter(r => r.crossMA99);
   const only30 = results.filter(r => !r.crossMA99 && r.crossMA30);
@@ -153,10 +195,11 @@ function formatMessage(results, elapsed, total) {
   let msg = `📡 <b>MA 돌파 스캐너</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
+  if (skipped > 0) msg += `🔕 쿨다운 중 ${skipped}개 제외\n`;
   msg += `─────────────────\n`;
 
   if (!results.length) {
-    msg += `\n조건 충족 종목 없음`;
+    msg += `\n신규 돌파 종목 없음`;
     return msg;
   }
 
@@ -184,9 +227,13 @@ function formatMessage(results, elapsed, total) {
   return msg;
 }
 
+// ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
   const startTime = Date.now();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 스캔 시작`);
+
+  // 쿨다운 상태 로드
+  const state = loadState();
 
   try {
     let symbols = await getAllSymbols();
@@ -194,23 +241,30 @@ async function main() {
     symbols = symbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
     const total = symbols.length;
-    console.log(`심볼 수: ${total}`);
-
     const results = [];
+    let skipped = 0;
 
     for (let i = 0; i < symbols.length; i++) {
       const sym = symbols[i];
       try {
         const klines = await getKlines(sym);
         const r = analyze(sym, klines);
-        if (r) { r.vol = volMap[sym] || 0; results.push(r); }
+        if (r) {
+          r.vol = volMap[sym] || 0;
+          // 쿨다운 체크 - 최근에 이미 알림 간 종목 제외
+          if (isOnCooldown(state, sym)) {
+            skipped++;
+          } else {
+            results.push(r);
+          }
+        }
       } catch (_) {}
 
       if (i % 20 === 0) process.stdout.write(`\r진행: ${i}/${total} 발견: ${results.length}개`);
       await sleep(CONFIG.REQUEST_DELAY);
     }
 
-    // 정렬: MA99 우선 → 최근 봉 → 거래량
+    // 정렬
     results.sort((a, b) => {
       const a99 = !!a.crossMA99, b99 = !!b.crossMA99;
       if (b99 !== a99) return Number(b99) - Number(a99);
@@ -221,21 +275,25 @@ async function main() {
     });
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`\n완료: ${results.length}개 발견 (${elapsed}초)`);
+    console.log(`\n완료: ${results.length}개 발견, ${skipped}개 쿨다운 (${elapsed}초)`);
 
-    const msg = formatMessage(results, elapsed, total);
+    // 알림 간 종목 쿨다운 등록
+    if (results.length > 0) {
+      updateState(state, results.map(r => r.symbol));
+      saveState(state);
+    }
 
-    // 4096자 넘으면 나눠서 전송
+    // 텔레그램 전송 (결과 없어도 전송 - 필요시 아래 조건 추가)
+    // if (!results.length) { process.exit(0); return; }
+
+    const msg = formatMessage(results, elapsed, total, skipped);
     if (msg.length <= 4096) {
       await sendTelegram(msg);
     } else {
       const chunks = [];
       let chunk = "";
       for (const line of msg.split("\n")) {
-        if ((chunk + line).length > 4000) {
-          chunks.push(chunk);
-          chunk = "";
-        }
+        if ((chunk + line).length > 4000) { chunks.push(chunk); chunk = ""; }
         chunk += line + "\n";
       }
       if (chunk) chunks.push(chunk);
@@ -247,7 +305,6 @@ async function main() {
     await sendTelegram(`❌ 스캐너 오류: ${e.message}`);
   }
 
-  // cron용: 실행 후 종료
   process.exit(0);
 }
 
