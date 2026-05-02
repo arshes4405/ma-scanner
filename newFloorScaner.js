@@ -248,11 +248,7 @@ async function main() {
         const r = analyze(sym, klines);
         if (r) {
           r.vol = volMap[sym] || 0;
-          if (isOnCooldown(state, sym)) {
-            skipped++;
-          } else {
-            results.push(r);
-          }
+          results.push(r);
         }
       } catch (_) {}
 
