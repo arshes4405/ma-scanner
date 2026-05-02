@@ -7,7 +7,7 @@ const https  = require("https");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "floorScanerVer2 v2";
+const VERSION = "floorScanerVer2 v3";
 
 const CONFIG = {
   BASE_URL:        "https://fapi.binance.com",
@@ -104,6 +104,7 @@ async function getKlines(symbol) {
     `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${CONFIG.INTERVAL}&limit=${CONFIG.CANDLE_LIMIT}`
   );
   return d.map(k => ({
+    openTime: k[0],
     open:   parseFloat(k[1]),
     low:    parseFloat(k[3]),
     close:  parseFloat(k[4]),
@@ -124,10 +125,12 @@ function analyzeWithLog(symbol, klines) {
   if (cur.close <= cur.open)
     return { pass: false, reason: `음봉 (open:${cur.open.toFixed(4)} close:${cur.close.toFixed(4)})` };
 
-  // 2. 거래량 돌파
-  const volRatio = cur.volume / prev.volume;
+  // 2. 거래량 돌파 (현재봉 경과 시간 기준 1시간 환산)
+  const elapsedRatio = Math.min(1, Math.max(10 / 60, (Date.now() - cur.openTime) / 3_600_000));
+  const projectedVol = cur.volume / elapsedRatio;
+  const volRatio = projectedVol / prev.volume;
   if (volRatio <= 1)
-    return { pass: false, reason: `거래량 미달 (${volRatio.toFixed(2)}x)` };
+    return { pass: false, reason: `거래량 미달 (추정 ${volRatio.toFixed(2)}x, 경과 ${Math.round(elapsedRatio * 60)}분)` };
 
   // 3. RSI (직전봉)
   const prevCloses = closes.slice(0, -1);
