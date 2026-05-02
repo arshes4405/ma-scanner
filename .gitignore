@@ -1,0 +1,11 @@
+# SSH keys
+*.key
+*.pem
+*.ppk
+
+# Environment variables
+.env
+.env.local
+
+# Node
+node_modules/
