@@ -283,8 +283,7 @@ async function main() {
       saveState(state);
     }
 
-    // 텔레그램 전송 (결과 없어도 전송 - 필요시 아래 조건 추가)
-    // if (!results.length) { process.exit(0); return; }
+    if (!results.length) { process.exit(0); return; }
 
     const msg = formatMessage(results, elapsed, total, skipped);
     if (msg.length <= 4096) {
