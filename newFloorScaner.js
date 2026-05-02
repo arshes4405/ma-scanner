@@ -20,7 +20,7 @@ const CONFIG = {
   MIN_VOLUME_USDT:    1_000_000,
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
-  RSI_THRESHOLD:      40,
+  RSI_THRESHOLD:      30,
   ORDER_USDT:         100,  // notional (마진 = ORDER_USDT / LEVERAGE)
   LEVERAGE:           20,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
@@ -277,7 +277,7 @@ async function sendTelegram(text) {
 
 function formatMessage(results, elapsed, total) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;40 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
+  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;30 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
   msg += `─────────────────\n`;
@@ -299,10 +299,50 @@ function formatMessage(results, elapsed, total) {
   return msg;
 }
 
-// ─── 메인 ─────────────────────────────────────────────────────────────────────
+// ─── 테스트 매수 ────────────────────────────────────────────────────────────��─
+async function testBuy(symbol = "ETHUSDT") {
+  console.log(`\n=== [TEST BUY] ${symbol} ===`);
+  try {
+    const ticker = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/ticker/price?symbol=${symbol}`);
+    const price  = parseFloat(ticker.price);
+    console.log(`  현재가: $${price}`);
+
+    const alreadyIn = await hasOpenPosition(symbol);
+    if (alreadyIn) {
+      console.log(`  이미 포지션 있음 → 매수 스킵`);
+      await sendTelegram(`⏭ [TEST] ${symbol} 이미 포지션 있음`);
+      return;
+    }
+
+    await setLeverage(symbol);
+    console.log(`  레버리지 ${CONFIG.LEVERAGE}x 설정 완료`);
+
+    const { symbols: _, stepSizes } = await getSymbolsInfo();
+    const order = await placeMarketBuy(symbol, price, stepSizes[symbol]);
+    console.log(`  매수 완료! orderId: ${order.orderId} | qty: ${order.origQty}`);
+    await sendTelegram(
+      `✅ [TEST] ${symbol} 매수 완료\n` +
+      `  가격: $${price}\n` +
+      `  수량: ${order.origQty}\n` +
+      `  notional: $${CONFIG.ORDER_USDT} / 레버리지: ${CONFIG.LEVERAGE}x\n` +
+      `  orderId: ${order.orderId}`
+    );
+  } catch (e) {
+    console.error(`  매수 실패:`, e.message);
+    await sendTelegram(`❌ [TEST] ${symbol} 매수 실패: ${e.message}`);
+  }
+  console.log(`=== [TEST BUY] 완료 ===\n`);
+}
+
+// ─── 메인 ─────────────────────────���─────────────────────────────────���─────────
 async function main() {
   const startTime = Date.now();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작`);
+
+  // ★ 테스트 매수 - 확인 후 제거
+  await testBuy("ETHUSDT");
+  process.exit(0);
+  // ★★★★★★★★★★��★★★★★★★★
 
   loadState(); // 향후 쿨다운 복원 시 사용
 
