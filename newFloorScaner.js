@@ -417,10 +417,6 @@ async function main() {
   const startTime = Date.now();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작`);
 
-  // ★ 테스트 매도 - 확인 후 제거
-  await testSell("ETHUSDT");
-  process.exit(0);
-
   loadState();
 
   try {
@@ -447,12 +443,9 @@ async function main() {
               r.orderStatus = "이미 보유중";
             } else {
               await setLeverage(sym);
-              const order   = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
-              const sl      = await placeStopLoss(sym, r.price, order.origQty, tickSizes[sym], hedgeMode);
-              const slPrice = floorToStep(r.price * (1 - CONFIG.SL_PCT / 100), tickSizes[sym] || 0.01);
+              const order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
               console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty}`);
-              console.log(`  [SL]  ${sym} stopPrice: $${slPrice} orderId: ${sl.orderId}`);
-              r.orderStatus = `매수 완료 | qty: ${order.origQty} | SL: $${slPrice} (-${CONFIG.SL_PCT}%)`;
+              r.orderStatus = `매수 완료 | qty: ${order.origQty}`;
             }
           } catch (e) {
             console.error(`  [ERR] ${sym} 주문 실패:`, e.message);
