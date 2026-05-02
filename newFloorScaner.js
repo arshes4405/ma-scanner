@@ -215,7 +215,7 @@ async function setLeverage(symbol) {
 async function placeMarketBuy(symbol, price, stepSize) {
   const qty = floorToStep(CONFIG.ORDER_USDT / price, stepSize || 0.001);
   if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
-  const qs = `symbol=${symbol}&side=BUY&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+  const qs = `symbol=${symbol}&side=BUY&positionSide=LONG&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
