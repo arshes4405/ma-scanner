@@ -110,6 +110,7 @@ async function getKlines(symbol) {
   return d.map(k => ({
     openTime: k[0],
     open:   parseFloat(k[1]),
+    high:   parseFloat(k[2]),
     low:    parseFloat(k[3]),
     close:  parseFloat(k[4]),
     volume: parseFloat(k[7]),
@@ -148,7 +149,12 @@ function analyzeWithLog(symbol, klines) {
   if (curRsi === null || curRsi >= curRsiMax)
     return { pass: false, reason: `현재봉 RSI ${curRsi?.toFixed(1)} >= ${curRsiMax} (경과 ${Math.round(elapsedMin)}분 기준)` };
 
-  // 5. BB 하단 이탈 (직전봉 저가)
+  // 5. 현재가가 직전봉 고저 평균 이하
+  const prevMid = (prev.high + prev.low) / 2;
+  if (cur.close > prevMid)
+    return { pass: false, reason: `현재가 직전봉 중간값 초과 (cur:${cur.close.toFixed(4)} > mid:${prevMid.toFixed(4)})` };
+
+  // 6. BB 하단 이탈 (직전봉 저가)
   const bbLower = calcBollingerLower(prevCloses);
   if (!bbLower)
     return { pass: false, reason: "BB 계산 불가" };
@@ -171,7 +177,7 @@ async function main() {
   log(`[${new Date().toLocaleString("ko-KR")}] ${VERSION} 시작`);
 
   // 조건별 카운터
-  const counter = { 현재봉음봉: 0, 직전봉양봉: 0, RSI: 0, 현재봉RSI: 0, BB하단: 0, 통과: 0 };
+  const counter = { 현재봉음봉: 0, 직전봉양봉: 0, RSI: 0, 현재봉RSI: 0, 중간값초과: 0, BB하단: 0, 통과: 0 };
   const passed = [];
 
   try {
@@ -211,6 +217,7 @@ async function main() {
     log(`  직전봉 양봉  : ${counter["직전봉양봉"]}개`);
     log(`  RSI 초과     : ${counter["RSI"]}개`);
     log(`  현재봉RSI 고점: ${counter["현재봉RSI"]}개`);
+    log(`  직전봉중간값초과: ${counter["중간값초과"]}개`);
     log(`  BB하단 미이탈: ${counter["BB하단"]}개`);
     log(`  최종 통과    : ${counter["통과"]}개`);
     log(`${"─".repeat(50)}`);
