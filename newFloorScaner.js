@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-02 v12";
+const VERSION = "2026-05-03 v13";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -23,11 +23,13 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
-  ORDER_USDT:         500,
+  ORDER_USDT:         1000,
   LEVERAGE:           20,
   LEVERAGE_FALLBACK:  10,
   SL_PCT:             3,
+  TP_PCT:             5,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
+  TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
 };
 
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -158,6 +160,18 @@ function saveState(state) {
   try { fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
 }
 
+function loadTpState() {
+  try {
+    if (fs.existsSync(CONFIG.TP_STATE_FILE))
+      return JSON.parse(fs.readFileSync(CONFIG.TP_STATE_FILE, "utf8"));
+  } catch (_) {}
+  return {};
+}
+
+function saveTpState(state) {
+  try { fs.writeFileSync(CONFIG.TP_STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
+}
+
 function updateState(state, symbols) {
   const now = Date.now();
   for (const sym of symbols) state[sym] = now;
@@ -243,8 +257,8 @@ async function placeStopLoss(symbol, entryPrice, qty, tickSize, hedgeMode) {
   return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
 }
 
-// ─── 소프트웨어 스탑로스 ──────────────────────────────────────────────────────
-async function checkAndClosePositions(hedgeMode) {
+// ─── 소프트웨어 스탑로스 + 절반 익절 ─────────────────────────────────────────
+async function checkAndClosePositions(hedgeMode, stepSizes) {
   const qs    = `timestamp=${Date.now()}`;
   const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
 
@@ -252,28 +266,63 @@ async function checkAndClosePositions(hedgeMode) {
     ? pRisk.filter(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
     : pRisk.filter(p => parseFloat(p.positionAmt) > 0);
 
-  if (!positions.length) return;
+  const tpState = loadTpState();
+
+  // 포지션 없는 심볼의 TP 기록 정리
+  const activeSymbols = new Set(positions.map(p => p.symbol));
+  for (const sym of Object.keys(tpState)) {
+    if (!activeSymbols.has(sym)) delete tpState[sym];
+  }
+
+  if (!positions.length) {
+    saveTpState(tpState);
+    return;
+  }
 
   for (const pos of positions) {
-    const sym        = pos.symbol;
-    const entry      = parseFloat(pos.entryPrice);
-    const qty        = Math.abs(parseFloat(pos.positionAmt));
-    const markPrice  = parseFloat(pos.markPrice);
-    const dropPct    = ((markPrice - entry) / entry) * 100;
+    const sym       = pos.symbol;
+    const entry     = parseFloat(pos.entryPrice);
+    const qty       = Math.abs(parseFloat(pos.positionAmt));
+    const markPrice = parseFloat(pos.markPrice);
+    const pnlPct    = ((markPrice - entry) / entry) * 100;
+    const posSide   = hedgeMode ? "&positionSide=LONG" : "";
 
-    console.log(`  [POS] ${sym} 진입: $${entry} 현재: $${markPrice} 수익률: ${dropPct.toFixed(2)}%`);
+    console.log(`  [POS] ${sym} 진입: $${entry} 현재: $${markPrice} 수익률: ${pnlPct.toFixed(2)}%`);
 
-    if (dropPct <= -CONFIG.SL_PCT) {
+    // 절반 익절 (+5%)
+    if (pnlPct >= CONFIG.TP_PCT && !tpState[sym]) {
+      const halfQty = floorToStep(qty / 2, stepSizes[sym] || 0.001);
+      if (halfQty > 0) {
+        console.log(`  [TP]  ${sym} +${CONFIG.TP_PCT}% 도달 → 절반(${halfQty}) 익절`);
+        try {
+          const sellQs = `symbol=${sym}&side=SELL${posSide}&type=MARKET&quantity=${halfQty}&timestamp=${Date.now()}`;
+          const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
+          tpState[sym] = true;
+          console.log(`  [TP]  ${sym} 익절 완료 orderId: ${order.orderId}`);
+          await sendTelegram(
+            `💰 <b>절반 익절</b>\n` +
+            `<b>${sym}</b>  진입: $${entry} → 현재: $${markPrice}\n` +
+            `  수익률: +${pnlPct.toFixed(2)}% | qty: ${halfQty} (절반 매도)\n` +
+            `  orderId: ${order.orderId}`
+          );
+        } catch (e) {
+          console.error(`  [TP]  ${sym} 익절 실패:`, e.message);
+          await sendTelegram(`❌ ${sym} 절반 익절 실패: ${e.message}`);
+        }
+      }
+    }
+
+    // 스탑로스 (-3%)
+    if (pnlPct <= -CONFIG.SL_PCT) {
       console.log(`  [SL]  ${sym} -${CONFIG.SL_PCT}% 도달 → 시장가 청산`);
       try {
-        const posSide = hedgeMode ? "&positionSide=LONG" : "";
-        const sellQs  = `symbol=${sym}&side=SELL${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
-        const order   = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
+        const sellQs = `symbol=${sym}&side=SELL${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+        const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
         console.log(`  [SL]  ${sym} 청산 완료 orderId: ${order.orderId}`);
         await sendTelegram(
           `🛑 <b>스탑로스 청산</b>\n` +
           `<b>${sym}</b>  진입: $${entry} → 청산: $${markPrice}\n` +
-          `  수익률: ${dropPct.toFixed(2)}% | qty: ${qty}\n` +
+          `  수익률: ${pnlPct.toFixed(2)}% | qty: ${qty}\n` +
           `  orderId: ${order.orderId}`
         );
       } catch (e) {
@@ -282,6 +331,8 @@ async function checkAndClosePositions(hedgeMode) {
       }
     }
   }
+
+  saveTpState(tpState);
 }
 
 // ─── 분석 ─────────────────────────────────────────────────────────────────────
@@ -461,11 +512,10 @@ async function main() {
 
   try {
     const hedgeMode = await getIsHedgeMode();
-
-    // 스탑로스 체크 (스캔보다 먼저)
-    await checkAndClosePositions(hedgeMode);
-
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
+
+    // 스탑로스/익절 체크 (스캔보다 먼저)
+    await checkAndClosePositions(hedgeMode, stepSizes);
     const volMap  = await getVolumes();
     const symbols = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
