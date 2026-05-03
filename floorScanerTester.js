@@ -144,7 +144,7 @@ function analyzeWithLog(symbol, klines) {
 
   // 4. 현재봉 RSI 보정: 경과 시간에 따라 임계값 상향 (5분→36, 15분→37, ...)
   const elapsedMin = (Date.now() - cur.openTime) / 60_000;
-  const curRsiMax  = 35 + Math.ceil(elapsedMin / 10);
+  const curRsiMax  = rsi + 2 + Math.floor(elapsedMin / 10);
   const curRsi = calcRSI(closes, CONFIG.RSI_PERIOD);
   if (curRsi === null || curRsi >= curRsiMax)
     return { pass: false, reason: `현재봉 RSI ${curRsi?.toFixed(1)} >= ${curRsiMax} (경과 ${Math.round(elapsedMin)}분 기준)` };

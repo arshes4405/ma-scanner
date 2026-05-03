@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v25";
+const VERSION = "2026-05-03 v26";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -291,7 +291,7 @@ function analyze(symbol, klines) {
 
   // 현재봉 RSI 보정: 경과 시간에 따라 임계값 상향 (5분→36, 15분→37, ...)
   const elapsedMin = (Date.now() - cur.openTime) / 60_000;
-  const curRsiMax  = 35 + Math.ceil(elapsedMin / 10);
+  const curRsiMax  = rsi + 2 + Math.floor(elapsedMin / 10);
   const curRsi = calcRSI(closes, CONFIG.RSI_PERIOD);
   if (curRsi === null || curRsi >= curRsiMax) return null;
 
