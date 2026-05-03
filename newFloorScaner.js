@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v22";
+const VERSION = "2026-05-03 v23";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -23,7 +23,6 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
-  RSI_CUR_MAX:        40,
   ORDER_USDT:         1000,
   MAX_PRICE_USDT:     2000,
   LEVERAGE:           20,
@@ -267,9 +266,11 @@ function analyze(symbol, klines) {
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
 
-  // 현재봉 RSI가 이미 40 이상이면 고점 진입 방지
+  // 현재봉 RSI 보정: 경과 시간에 따라 임계값 상향 (5분→36, 15분→37, ...)
+  const elapsedMin = (Date.now() - cur.openTime) / 60_000;
+  const curRsiMax  = 35 + Math.ceil(elapsedMin / 10);
   const curRsi = calcRSI(closes, CONFIG.RSI_PERIOD);
-  if (curRsi === null || curRsi >= CONFIG.RSI_CUR_MAX) return null;
+  if (curRsi === null || curRsi >= curRsiMax) return null;
 
   // 직전봉 저가가 볼린저 하단(20, 2) 아래로 이탈
   const bbLower = calcBollingerLower(prevCloses);

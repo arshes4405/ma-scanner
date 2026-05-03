@@ -17,7 +17,6 @@ const CONFIG = {
   REQUEST_DELAY:   120,
   RSI_PERIOD:      14,
   RSI_THRESHOLD:   35,
-  RSI_CUR_MAX:     40,
 
   LOG_FILE:        path.join(__dirname, "floor_v2_log.txt"),
 };
@@ -142,10 +141,12 @@ function analyzeWithLog(symbol, klines) {
   if (rsi >= CONFIG.RSI_THRESHOLD)
     return { pass: false, reason: `RSI ${rsi.toFixed(1)} (기준 ${CONFIG.RSI_THRESHOLD} 초과)` };
 
-  // 4. 현재봉 RSI 40 미만 (고점 진입 방지)
+  // 4. 현재봉 RSI 보정: 경과 시간에 따라 임계값 상향 (5분→36, 15분→37, ...)
+  const elapsedMin = (Date.now() - cur.openTime) / 60_000;
+  const curRsiMax  = 35 + Math.ceil(elapsedMin / 10);
   const curRsi = calcRSI(closes, CONFIG.RSI_PERIOD);
-  if (curRsi === null || curRsi >= CONFIG.RSI_CUR_MAX)
-    return { pass: false, reason: `현재봉 RSI ${curRsi?.toFixed(1)} >= ${CONFIG.RSI_CUR_MAX} (고점)` };
+  if (curRsi === null || curRsi >= curRsiMax)
+    return { pass: false, reason: `현재봉 RSI ${curRsi?.toFixed(1)} >= ${curRsiMax} (경과 ${Math.round(elapsedMin)}분 기준)` };
 
   // 5. BB 하단 이탈 (직전봉 저가)
   const bbLower = calcBollingerLower(prevCloses);
@@ -158,7 +159,7 @@ function analyzeWithLog(symbol, klines) {
 
   return {
     pass: true,
-    price: cur.close, rsi: +rsi.toFixed(1), curRsi: +curRsi.toFixed(1),
+    price: cur.close, rsi: +rsi.toFixed(1), curRsi: +curRsi.toFixed(1), curRsiMax,
     bbLower: +bbLower.toFixed(4),
   };
 }
@@ -190,7 +191,7 @@ async function main() {
         if (result.pass) {
           counter["통과"]++;
           passed.push({ symbol: sym, ...result, vol: volMap[sym], price: priceMap[sym] });
-          log(`✅ ${sym.padEnd(12)} 통과! RSI직전:${result.rsi} RSI현재:${result.curRsi} BB:${result.bbLower}`);
+          log(`✅ ${sym.padEnd(12)} 통과! RSI직전:${result.rsi} RSI현재:${result.curRsi}(기준<${result.curRsiMax}) BB:${result.bbLower}`);
         } else {
           // 탈락 이유 첫 단어로 카운터 분류
           const key = Object.keys(counter).find(k => result.reason.includes(k));
@@ -220,7 +221,7 @@ async function main() {
       log("\n[최종 통과 종목]");
       for (const r of passed.sort((a, b) => a.rsi - b.rsi)) {
         const vol = r.vol >= 1e9 ? (r.vol/1e9).toFixed(1)+"B" : (r.vol/1e6).toFixed(0)+"M";
-        log(`  ${r.symbol.padEnd(12)} RSI직전:${r.rsi} RSI현재:${r.curRsi} BB:${r.bbLower} ${vol}`);
+        log(`  ${r.symbol.padEnd(12)} RSI직전:${r.rsi} RSI현재:${r.curRsi}(기준<${r.curRsiMax}) BB:${r.bbLower} ${vol}`);
       }
     }
 
