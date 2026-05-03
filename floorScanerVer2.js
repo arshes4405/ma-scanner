@@ -7,16 +7,18 @@ const https  = require("https");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "floorScanerVer2 v3";
+const VERSION = "floorScanerVer2 v4";
 
 const CONFIG = {
   BASE_URL:        "https://fapi.binance.com",
   INTERVAL:        "1h",
   CANDLE_LIMIT:    150,
   MIN_VOLUME_USDT: 1_000_000,
+  MAX_PRICE_USDT:  2000,
   REQUEST_DELAY:   120,
   RSI_PERIOD:      14,
   RSI_THRESHOLD:   35,
+  VOL_RATIO_MIN:   0.95,
   LOG_FILE:        path.join(__dirname, "floor_v2_log.txt"),
 };
 
@@ -94,9 +96,12 @@ async function getAllSymbols() {
 
 async function getVolumes() {
   const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/ticker/24hr`);
-  const m = {};
-  for (const t of d) m[t.symbol] = parseFloat(t.quoteVolume);
-  return m;
+  const volMap = {}, priceMap = {};
+  for (const t of d) {
+    volMap[t.symbol]   = parseFloat(t.quoteVolume);
+    priceMap[t.symbol] = parseFloat(t.lastPrice);
+  }
+  return { volMap, priceMap };
 }
 
 async function getKlines(symbol) {
@@ -129,8 +134,8 @@ function analyzeWithLog(symbol, klines) {
   const elapsedRatio = Math.min(1, Math.max(10 / 60, (Date.now() - cur.openTime) / 3_600_000));
   const projectedVol = cur.volume / elapsedRatio;
   const volRatio = projectedVol / prev.volume;
-  if (volRatio <= 1)
-    return { pass: false, reason: `거래량 미달 (추정 ${volRatio.toFixed(2)}x, 경과 ${Math.round(elapsedRatio * 60)}분)` };
+  if (volRatio <= CONFIG.VOL_RATIO_MIN)
+    return { pass: false, reason: `거래량 미달 (추정 ${volRatio.toFixed(2)}x, 기준 ${CONFIG.VOL_RATIO_MIN}x, 경과 ${Math.round(elapsedRatio * 60)}분)` };
 
   // 3. RSI (직전봉)
   const prevCloses = closes.slice(0, -1);
@@ -167,9 +172,11 @@ async function main() {
   const passed = [];
 
   try {
-    const allSymbols = await getAllSymbols();
-    const volMap     = await getVolumes();
-    const symbols    = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
+    const allSymbols       = await getAllSymbols();
+    const { volMap, priceMap } = await getVolumes();
+    const symbols = allSymbols
+      .filter(s => (volMap[s]   || 0) >= CONFIG.MIN_VOLUME_USDT)
+      .filter(s => (priceMap[s] || 0) <  CONFIG.MAX_PRICE_USDT);
 
     log(`총 ${symbols.length}개 스캔 시작\n`);
 
@@ -181,7 +188,7 @@ async function main() {
 
         if (result.pass) {
           counter["통과"]++;
-          passed.push({ symbol: sym, ...result, vol: volMap[sym] });
+          passed.push({ symbol: sym, ...result, vol: volMap[sym], price: priceMap[sym] });
           log(`✅ ${sym.padEnd(12)} 통과! RSI:${result.rsi} BB:${result.bbLower} vol:${result.volRatio}x`);
         } else {
           // 탈락 이유 첫 단어로 카운터 분류
