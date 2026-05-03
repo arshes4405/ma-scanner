@@ -108,7 +108,7 @@ function simulateSymbol(symbol, klines) {
       }
 
       if (exitPrice) {
-        const pnl = CONFIG.ORDER_USDT * CONFIG.LEVERAGE * (exitPrice - openPos.entry) / openPos.entry;
+        const pnl = CONFIG.ORDER_USDT * (exitPrice - openPos.entry) / openPos.entry;
         trades.push({ symbol, action, entry: openPos.entry, exit: exitPrice, pnl: +pnl.toFixed(2) });
         openPos = null;
       }
