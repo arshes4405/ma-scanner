@@ -158,7 +158,7 @@ function analyzeWithLog(symbol, klines) {
 
   return {
     pass: true,
-    price: cur.close, rsi: +rsi.toFixed(1),
+    price: cur.close, rsi: +rsi.toFixed(1), curRsi: +curRsi.toFixed(1),
     bbLower: +bbLower.toFixed(4),
   };
 }
@@ -190,7 +190,7 @@ async function main() {
         if (result.pass) {
           counter["통과"]++;
           passed.push({ symbol: sym, ...result, vol: volMap[sym], price: priceMap[sym] });
-          log(`✅ ${sym.padEnd(12)} 통과! RSI:${result.rsi} BB:${result.bbLower}`);
+          log(`✅ ${sym.padEnd(12)} 통과! RSI직전:${result.rsi} RSI현재:${result.curRsi} BB:${result.bbLower}`);
         } else {
           // 탈락 이유 첫 단어로 카운터 분류
           const key = Object.keys(counter).find(k => result.reason.includes(k));
@@ -220,7 +220,7 @@ async function main() {
       log("\n[최종 통과 종목]");
       for (const r of passed.sort((a, b) => a.rsi - b.rsi)) {
         const vol = r.vol >= 1e9 ? (r.vol/1e9).toFixed(1)+"B" : (r.vol/1e6).toFixed(0)+"M";
-        log(`  ${r.symbol.padEnd(12)} RSI:${r.rsi} BB:${r.bbLower} ${vol}`);
+        log(`  ${r.symbol.padEnd(12)} RSI직전:${r.rsi} RSI현재:${r.curRsi} BB:${r.bbLower} ${vol}`);
       }
     }
 
