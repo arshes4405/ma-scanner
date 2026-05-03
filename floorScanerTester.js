@@ -7,7 +7,7 @@ const https  = require("https");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "floorScanerTester v1";
+const VERSION = "floorScanerTester v2";
 
 const CONFIG = {
   BASE_URL:        "https://fapi.binance.com",
