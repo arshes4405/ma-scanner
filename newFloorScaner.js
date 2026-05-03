@@ -24,7 +24,6 @@ const CONFIG = {
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
   ORDER_USDT:         1000,
-  MAX_PRICE_USDT:     2000,
   LEVERAGE:           20,
   LEVERAGE_FALLBACK:  10,
   SL_PCT:             3,
@@ -449,8 +448,7 @@ async function main() {
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const { volMap, priceMap } = await getVolumes();
     const symbols = allSymbols
-      .filter(s => (volMap[s]   || 0) >= CONFIG.MIN_VOLUME_USDT)
-      .filter(s => (priceMap[s] || 0) <  CONFIG.MAX_PRICE_USDT);
+      .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
     const total   = symbols.length;
     const results = [];
