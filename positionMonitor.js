@@ -115,11 +115,11 @@ function saveTpState(state) {
   try { fs.writeFileSync(CONFIG.TP_STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
 }
 
-function logTrade(action, symbol, entryPrice, exitPrice, qty, pnlPct, orderId) {
+function logTrade(action, symbol, entryPrice, exitPrice, qty, pnlPct, pnlUsdt, orderId) {
   try {
-    const header = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,order_id\n";
+    const header = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,pnl_usdt,order_id\n";
     const dt = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }).replace(/,/g, "");
-    const row = `${dt},${symbol},${action},${entryPrice},${exitPrice},${qty},${pnlPct},${orderId}\n`;
+    const row = `${dt},${symbol},${action},${entryPrice},${exitPrice},${qty},${pnlPct},${pnlUsdt},${orderId}\n`;
     if (!fs.existsSync(CONFIG.TRADE_LOG_FILE)) fs.writeFileSync(CONFIG.TRADE_LOG_FILE, header, "utf8");
     fs.appendFileSync(CONFIG.TRADE_LOG_FILE, row, "utf8");
   } catch (_) {}
@@ -200,7 +200,7 @@ async function checkAndClosePositions(hedgeMode) {
           const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
           tpState[sym] = true;
           console.log(`  [TP]  ${sym} 익절 완료 orderId: ${order.orderId}`);
-          logTrade("TP_HALF", sym, entry, markPrice, halfQty, +pnlPct.toFixed(2), order.orderId);
+          logTrade("TP_HALF", sym, entry, markPrice, halfQty, +pnlPct.toFixed(2), +(halfQty * (markPrice - entry)).toFixed(4), order.orderId);
           await sendTelegram(
             `💰 <b>절반 익절</b>\n` +
             `<b>${sym}</b>  진입: $${entry} → 현재: $${markPrice}\n` +
@@ -224,7 +224,7 @@ async function checkAndClosePositions(hedgeMode) {
         const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
         const action = tpState[sym] ? "BE_CLOSE" : "SL";
         console.log(`  [SL]  ${sym} 청산 완료 orderId: ${order.orderId}`);
-        logTrade(action, sym, entry, markPrice, qty, +pnlPct.toFixed(2), order.orderId);
+        logTrade(action, sym, entry, markPrice, qty, +pnlPct.toFixed(2), +(qty * (markPrice - entry)).toFixed(4), order.orderId);
         await sendTelegram(
           `🛑 <b>${slLabel} 청산</b>\n` +
           `<b>${sym}</b>  진입: $${entry} → 청산: $${markPrice}\n` +
