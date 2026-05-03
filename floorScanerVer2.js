@@ -7,14 +7,13 @@ const https  = require("https");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "floorScanerVer2 v4";
+const VERSION = "floorScanerVer2 v5";
 
 const CONFIG = {
   BASE_URL:        "https://fapi.binance.com",
   INTERVAL:        "1h",
   CANDLE_LIMIT:    150,
   MIN_VOLUME_USDT: 1_000_000,
-  MAX_PRICE_USDT:  2000,
   REQUEST_DELAY:   120,
   RSI_PERIOD:      14,
   RSI_THRESHOLD:   35,
@@ -175,8 +174,7 @@ async function main() {
     const allSymbols       = await getAllSymbols();
     const { volMap, priceMap } = await getVolumes();
     const symbols = allSymbols
-      .filter(s => (volMap[s]   || 0) >= CONFIG.MIN_VOLUME_USDT)
-      .filter(s => (priceMap[s] || 0) <  CONFIG.MAX_PRICE_USDT);
+      .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
     log(`총 ${symbols.length}개 스캔 시작\n`);
 
