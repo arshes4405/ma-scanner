@@ -1,5 +1,7 @@
 const https = require("https");
 
+const VERSION = "2026-05-03 v1";
+
 const CONFIG = {
   BASE_URL:      "https://fapi.binance.com",
   INTERVAL:      "1h",
@@ -124,6 +126,7 @@ function simulateSymbol(symbol, klines) {
 }
 
 async function main() {
+  console.log(`[백테스트 ${VERSION}] ${new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}`);
   console.log("심볼 목록 조회 중...");
   const info = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
   const allSymbols = info.symbols
