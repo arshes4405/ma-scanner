@@ -287,6 +287,8 @@ function analyze(symbol, klines) {
     symbol,
     price:   cur.close,
     rsi:     +rsi.toFixed(1),
+    curRsi:  +curRsi.toFixed(1),
+    curRsiMax,
     bbLower: +bbLower.toFixed(4),
   };
 }
@@ -313,7 +315,7 @@ function formatMessage(results, elapsed, total) {
   for (const r of results) {
     const vol = r.vol >= 1e9 ? (r.vol / 1e9).toFixed(1) + "B" : (r.vol / 1e6).toFixed(0) + "M";
     msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
-    msg += `  RSI(직전): <b>${r.rsi}</b> | BB하단: ${r.bbLower}\n`;
+    msg += `  RSI 직전: <b>${r.rsi}</b> | 현재: <b>${r.curRsi}</b>(기준&lt;${r.curRsiMax}) | BB하단: ${r.bbLower}\n`;
     msg += `  거래량: ${vol}\n`;
     if (r.orderStatus) {
       const icon = r.orderStatus.startsWith("매수 완료") ? "✅" : r.orderStatus.startsWith("이미") ? "⏭" : "❌";
