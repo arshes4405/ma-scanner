@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v21";
+const VERSION = "2026-05-03 v22";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -274,7 +274,8 @@ function analyze(symbol, klines) {
   // 직전봉 저가가 볼린저 하단(20, 2) 아래로 이탈
   const bbLower = calcBollingerLower(prevCloses);
   const prevLow = klines[lastIdx - 1].low;
-  if (!bbLower || prevLow >= bbLower) return null;
+  const prevAvg = (prevLow + prev.close) / 2;
+  if (!bbLower || prevAvg >= bbLower) return null;
 
   return {
     symbol,

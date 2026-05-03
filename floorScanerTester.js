@@ -152,8 +152,9 @@ function analyzeWithLog(symbol, klines) {
   if (!bbLower)
     return { pass: false, reason: "BB 계산 불가" };
   const prevLow = prev.low;
-  if (prevLow >= bbLower)
-    return { pass: false, reason: `BB하단 미이탈 (low:${prevLow.toFixed(4)} > bb:${bbLower.toFixed(4)})` };
+  const prevAvg = (prevLow + prev.close) / 2;
+  if (prevAvg >= bbLower)
+    return { pass: false, reason: `BB하단 미이탈 (avg:${prevAvg.toFixed(4)} > bb:${bbLower.toFixed(4)})` };
 
   return {
     pass: true,
