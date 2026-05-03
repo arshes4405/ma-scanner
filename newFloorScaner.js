@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v14";
+const VERSION = "2026-05-03 v15";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -266,9 +266,10 @@ async function checkAndClosePositions(hedgeMode, stepSizes) {
   const qs    = `timestamp=${Date.now()}`;
   const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
 
-  const positions = hedgeMode
+  const positions = (hedgeMode
     ? pRisk.filter(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
-    : pRisk.filter(p => parseFloat(p.positionAmt) > 0);
+    : pRisk.filter(p => parseFloat(p.positionAmt) > 0)
+  ).filter(p => parseFloat(p.markPrice) < CONFIG.MAX_PRICE_USDT);
 
   const tpState = loadTpState();
 
