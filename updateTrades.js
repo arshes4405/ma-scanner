@@ -55,41 +55,42 @@ function fmtDatetime(ms) {
   return `${yyyy}. ${mo}. ${dd}. ${ampm} ${h12}:${mm}:${ss}`;
 }
 
-const NEW_HEADER = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,pnl_usdt,order_id";
-const OLD_HEADER = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,order_id";
+const NEW_HEADER = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,pnl_usdt,source,order_id";
+
+// 구버전 헤더 → 신버전 마이그레이션 (컬럼 수로 판별)
+function migrateHeader(lines) {
+  const cols = lines[0].split(",").length;
+  if (cols === 10) return null; // 이미 최신
+  return lines.map((line, i) => {
+    if (i === 0) return NEW_HEADER;
+    const c = line.split(",");
+    if (cols === 8) { c.splice(7, 0, "", "SYSTEM"); }  // pnl_pct 뒤 pnl_usdt+source 추가
+    if (cols === 9) { c.splice(8, 0, "SYSTEM"); }       // pnl_usdt 뒤 source 추가
+    return c.join(",");
+  }).join("\n") + "\n";
+}
 
 async function main() {
   // 기존 CSV 읽기
-  let existingContent = "";
   let existingTranIds = new Set();
 
   if (fs.existsSync(CONFIG.LOG_FILE)) {
-    existingContent = fs.readFileSync(CONFIG.LOG_FILE, "utf8");
+    const existingContent = fs.readFileSync(CONFIG.LOG_FILE, "utf8");
     const lines = existingContent.trim().split("\n");
 
-    // 헤더가 구버전이면 교체
-    if (lines[0].trim() === OLD_HEADER) {
-      // 기존 데이터 행에 빈 pnl_usdt 컬럼 삽입 (order_id 앞)
-      const updated = lines.map((line, i) => {
-        if (i === 0) return NEW_HEADER;
-        const cols = line.split(",");
-        // pnl_pct(idx6) 뒤에 빈 pnl_usdt 추가
-        cols.splice(7, 0, "");
-        return cols.join(",");
-      });
-      existingContent = updated.join("\n") + "\n";
-      fs.writeFileSync(CONFIG.LOG_FILE, existingContent, "utf8");
-      console.log("헤더 업그레이드 완료 (pnl_usdt 컬럼 추가)");
+    const migrated = migrateHeader(lines);
+    if (migrated) {
+      fs.writeFileSync(CONFIG.LOG_FILE, migrated, "utf8");
+      console.log("헤더 업그레이드 완료");
     }
 
-    // 중복 방지용 tranId 수집 (order_id 컬럼 = idx8)
+    // 중복 방지용 order_id 수집 (idx9)
     for (const line of lines.slice(1)) {
-      const cols = line.split(",");
-      if (cols[8]) existingTranIds.add(cols[8].trim());
+      const c = line.split(",");
+      if (c[9]) existingTranIds.add(c[9].trim());
     }
   } else {
-    existingContent = NEW_HEADER + "\n";
-    fs.writeFileSync(CONFIG.LOG_FILE, existingContent, "utf8");
+    fs.writeFileSync(CONFIG.LOG_FILE, NEW_HEADER + "\n", "utf8");
   }
 
   // 전날 REALIZED_PNL 내역 조회 (KST 기준 어제 00:00 ~ 23:59)
@@ -128,8 +129,7 @@ async function main() {
     const action   = d.pnl >= 0 ? "AUTO_CLOSE" : "AUTO_SL";
     const pnlUsdt  = d.pnl.toFixed(4);
     const datetime = fmtDatetime(d.lastTime);
-    // datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,pnl_usdt,order_id
-    appendLines += `${datetime},${sym},${action},,,,,${pnlUsdt},${d.lastTranId}\n`;
+    appendLines += `${datetime},${sym},${action},,,,,${pnlUsdt},MANUAL,${d.lastTranId}\n`;
     appendCount++;
   }
 

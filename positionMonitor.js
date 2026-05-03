@@ -117,9 +117,9 @@ function saveTpState(state) {
 
 function logTrade(action, symbol, entryPrice, exitPrice, qty, pnlPct, pnlUsdt, orderId) {
   try {
-    const header = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,pnl_usdt,order_id\n";
-    const dt = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }).replace(/,/g, "");
-    const row = `${dt},${symbol},${action},${entryPrice},${exitPrice},${qty},${pnlPct},${pnlUsdt},${orderId}\n`;
+    const header = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,pnl_usdt,source,order_id\n";
+    const dt  = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }).replace(/,/g, "");
+    const row = `${dt},${symbol},${action},${entryPrice},${exitPrice},${qty},${pnlPct},${pnlUsdt},SYSTEM,${orderId}\n`;
     if (!fs.existsSync(CONFIG.TRADE_LOG_FILE)) fs.writeFileSync(CONFIG.TRADE_LOG_FILE, header, "utf8");
     fs.appendFileSync(CONFIG.TRADE_LOG_FILE, row, "utf8");
   } catch (_) {}
@@ -225,6 +225,7 @@ async function checkAndClosePositions(hedgeMode) {
         const action = tpState[sym] ? "BE_CLOSE" : "SL";
         console.log(`  [SL]  ${sym} 청산 완료 orderId: ${order.orderId}`);
         logTrade(action, sym, entry, markPrice, qty, +pnlPct.toFixed(2), +(qty * (markPrice - entry)).toFixed(4), order.orderId);
+
         await sendTelegram(
           `🛑 <b>${slLabel} 청산</b>\n` +
           `<b>${sym}</b>  진입: $${entry} → 청산: $${markPrice}\n` +
