@@ -18,7 +18,7 @@ const CONFIG = {
   BASE_URL:           "https://fapi.binance.com",
   SL_PCT:             3,
   TP_PCT:             5,
-  MAX_PRICE_USDT:     2000,
+  MAX_MARGIN_USDT:    2000,
   TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
   TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
 };
@@ -162,7 +162,10 @@ async function checkAndClosePositions(hedgeMode) {
   const positions = (hedgeMode
     ? pRisk.filter(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
     : pRisk.filter(p => parseFloat(p.positionAmt) > 0)
-  ).filter(p => parseFloat(p.markPrice) < CONFIG.MAX_PRICE_USDT);
+  ).filter(p => {
+    const margin = Math.abs(parseFloat(p.notional)) / parseFloat(p.leverage);
+    return margin < CONFIG.MAX_MARGIN_USDT;
+  });
 
   const tpState = loadTpState();
 
