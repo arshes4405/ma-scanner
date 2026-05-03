@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v13";
+const VERSION = "2026-05-03 v14";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -24,6 +24,7 @@ const CONFIG = {
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
   ORDER_USDT:         1000,
+  MAX_PRICE_USDT:     2000,
   LEVERAGE:           20,
   LEVERAGE_FALLBACK:  10,
   SL_PCT:             3,
@@ -201,9 +202,12 @@ async function getSymbolsInfo() {
 
 async function getVolumes() {
   const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/ticker/24hr`);
-  const m = {};
-  for (const t of d) m[t.symbol] = parseFloat(t.quoteVolume);
-  return m;
+  const volMap = {}, priceMap = {};
+  for (const t of d) {
+    volMap[t.symbol]   = parseFloat(t.quoteVolume);
+    priceMap[t.symbol] = parseFloat(t.lastPrice);
+  }
+  return { volMap, priceMap };
 }
 
 async function getKlines(symbol) {
@@ -516,8 +520,10 @@ async function main() {
 
     // 스탑로스/익절 체크 (스캔보다 먼저)
     await checkAndClosePositions(hedgeMode, stepSizes);
-    const volMap  = await getVolumes();
-    const symbols = allSymbols.filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
+    const { volMap, priceMap } = await getVolumes();
+    const symbols = allSymbols
+      .filter(s => (volMap[s]   || 0) >= CONFIG.MIN_VOLUME_USDT)
+      .filter(s => (priceMap[s] || 0) <  CONFIG.MAX_PRICE_USDT);
 
     const total   = symbols.length;
     const results = [];
