@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v18";
+const VERSION = "2026-05-03 v19";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -31,6 +31,7 @@ const CONFIG = {
   TP_PCT:             5,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
   TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
+  TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
 };
 
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -173,6 +174,16 @@ function saveTpState(state) {
   try { fs.writeFileSync(CONFIG.TP_STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
 }
 
+function logTrade(action, symbol, entryPrice, exitPrice, qty, pnlPct, orderId) {
+  try {
+    const header = "datetime,symbol,action,entry_price,exit_price,qty,pnl_pct,order_id\n";
+    const dt = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }).replace(/,/g, "");
+    const row = `${dt},${symbol},${action},${entryPrice},${exitPrice},${qty},${pnlPct},${orderId}\n`;
+    if (!fs.existsSync(CONFIG.TRADE_LOG_FILE)) fs.writeFileSync(CONFIG.TRADE_LOG_FILE, header, "utf8");
+    fs.appendFileSync(CONFIG.TRADE_LOG_FILE, row, "utf8");
+  } catch (_) {}
+}
+
 function updateState(state, symbols) {
   const now = Date.now();
   for (const sym of symbols) state[sym] = now;
@@ -304,6 +315,7 @@ async function checkAndClosePositions(hedgeMode, stepSizes) {
           const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
           tpState[sym] = true;
           console.log(`  [TP]  ${sym} 익절 완료 orderId: ${order.orderId}`);
+          logTrade("TP_HALF", sym, entry, markPrice, halfQty, +pnlPct.toFixed(2), order.orderId);
           await sendTelegram(
             `💰 <b>절반 익절</b>\n` +
             `<b>${sym}</b>  진입: $${entry} → 현재: $${markPrice}\n` +
@@ -326,6 +338,8 @@ async function checkAndClosePositions(hedgeMode, stepSizes) {
         const sellQs = `symbol=${sym}&side=SELL${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
         const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
         console.log(`  [SL]  ${sym} 청산 완료 orderId: ${order.orderId}`);
+        const action = tpState[sym] ? "BE_CLOSE" : "SL";
+        logTrade(action, sym, entry, markPrice, qty, +pnlPct.toFixed(2), order.orderId);
         await sendTelegram(
           `🛑 <b>${slLabel} 청산</b>\n` +
           `<b>${sym}</b>  진입: $${entry} → 청산: $${markPrice}\n` +
