@@ -28,6 +28,7 @@ const CONFIG = {
   MAX_INVESTED:       1500,
   LEVERAGE:           20,
   EXCLUDE_SYMBOLS:    ["PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "MERLUSDT", "EVAAUSDT", "ARIAUSDT"],
+  MAJOR_SYMBOLS:      ["BTCUSDT", "ETHUSDT", "SOLUSDT", "HYPEUSDT"],
   LEVERAGE_FALLBACK:  10,
   SL_PCT:             3,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
