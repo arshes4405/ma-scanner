@@ -295,11 +295,12 @@ function analyze(symbol, klines) {
 
   return {
     symbol,
-    price:   cur.close,
-    rsi:     +rsi.toFixed(1),
-    curRsi:  +curRsi.toFixed(1),
+    open:     cur.open,
+    price:    cur.close,
+    rsi:      +rsi.toFixed(1),
+    curRsi:   +curRsi.toFixed(1),
     curRsiMax,
-    bbLower: +bbLower.toFixed(4),
+    bbLower:  +bbLower.toFixed(4),
   };
 }
 
@@ -315,7 +316,7 @@ async function sendTelegram(text) {
 
 function formatMessage(results, elapsed, total) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-  let msg = `🔍 <b>바닥 스캐너 (MA역배열 + RSI&lt;35 + BB하단이탈 + 양봉 + 거래량 돌파)</b>\n`;
+  let msg = `🔍 <b>바닥 스캐너 ${VERSION}</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
   msg += `─────────────────\n`;
@@ -323,8 +324,9 @@ function formatMessage(results, elapsed, total) {
   results.sort((a, b) => a.rsi - b.rsi);
 
   for (const r of results) {
-    const vol = r.vol >= 1e9 ? (r.vol / 1e9).toFixed(1) + "B" : (r.vol / 1e6).toFixed(0) + "M";
-    msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
+    const vol    = r.vol >= 1e9 ? (r.vol / 1e9).toFixed(1) + "B" : (r.vol / 1e6).toFixed(0) + "M";
+    const chgPct = ((r.price - r.open) / r.open * 100).toFixed(2);
+    msg += `\n<b>${r.symbol}</b>  $${r.open} → $${r.price} (${chgPct >= 0 ? "+" : ""}${chgPct}%)\n`;
     msg += `  RSI 직전: <b>${r.rsi}</b> | 현재: <b>${r.curRsi}</b>(기준&lt;${r.curRsiMax}) | BB하단: ${r.bbLower}\n`;
     msg += `  거래량: ${vol}\n`;
     if (r.orderStatus) {
