@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v24";
+const VERSION = "2026-05-03 v25";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -24,6 +24,8 @@ const CONFIG = {
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
   ORDER_USDT:         1000,
+  ORDER_USDT_ADD:     100,
+  MAX_INVESTED:       1500,
   LEVERAGE:           20,
   EXCLUDE_SYMBOLS:    ["PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "MERLUSDT", "EVAAUSDT"],
   LEVERAGE_FALLBACK:  10,
@@ -159,11 +161,21 @@ function saveState(state) {
   try { fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
 }
 
-function updateState(state, symbols) {
+function getStateEntry(state, sym) {
+  const v = state[sym];
+  if (!v) return null;
+  // 구버전 호환 (숫자만 저장된 경우)
+  if (typeof v === "number") return { time: v, candleTime: 0, totalInvested: CONFIG.ORDER_USDT };
+  return v;
+}
+
+function updateState(state, sym, candleTime, invested) {
+  state[sym] = { time: Date.now(), candleTime, totalInvested: invested };
+  // 24시간 지난 항목 정리
   const now = Date.now();
-  for (const sym of symbols) state[sym] = now;
-  for (const sym of Object.keys(state)) {
-    if (now - state[sym] > 24 * 60 * 60 * 1000) delete state[sym];
+  for (const k of Object.keys(state)) {
+    const entry = getStateEntry(state, k);
+    if (entry && now - entry.time > 24 * 60 * 60 * 1000) delete state[k];
   }
   return state;
 }
@@ -241,8 +253,8 @@ async function setLeverage(symbol, leverage) {
   return httpPostSigned("/fapi/v1/leverage", `${qs}&signature=${sign(qs)}`);
 }
 
-async function placeMarketBuy(symbol, price, stepSize, hedgeMode) {
-  const qty     = floorToStep(CONFIG.ORDER_USDT / price, stepSize || 0.001);
+async function placeMarketBuy(symbol, price, stepSize, hedgeMode, amount = CONFIG.ORDER_USDT) {
+  const qty     = floorToStep(amount / price, stepSize || 0.001);
   if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
   const posSide = hedgeMode ? "&positionSide=LONG" : "";
   const qs = `symbol=${symbol}&side=BUY${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
@@ -444,7 +456,7 @@ async function main() {
   const startTime = Date.now();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작 (${VERSION})`);
 
-  loadState();
+  const state = loadState();
 
   try {
     const hedgeMode = await getIsHedgeMode();
@@ -467,9 +479,40 @@ async function main() {
 
           try {
             const alreadyIn = await hasOpenPosition(sym, hedgeMode);
+            const curCandleTime = klines[klines.length - 1].openTime;
+            const stateEntry = getStateEntry(state, sym);
+
             if (alreadyIn) {
-              console.log(`  [SKIP] ${sym} 이미 포지션 있음`);
-              r.orderStatus = "이미 보유중";
+              if (!stateEntry) {
+                // 스캐너 밖에서 진입한 포지션 (추적 정보 없음)
+                console.log(`  [SKIP] ${sym} 이미 보유중 (추적 없음)`);
+                r.orderStatus = "이미 보유중";
+              } else if (stateEntry.candleTime === curCandleTime) {
+                // 같은 1시간봉에서 이미 진입됨 → 스킵
+                console.log(`  [SKIP] ${sym} 동일봉 스킵`);
+                r.orderStatus = "이미 보유중 (동일봉)";
+              } else if (stateEntry.totalInvested >= CONFIG.MAX_INVESTED) {
+                // 최대 투자금액 도달
+                console.log(`  [SKIP] ${sym} 최대매수 도달 ($${CONFIG.MAX_INVESTED})`);
+                r.orderStatus = `최대매수 도달 ($${CONFIG.MAX_INVESTED})`;
+              } else {
+                // 새 봉 + 추가매수 가능 → DCA
+                const addAmount = Math.min(CONFIG.ORDER_USDT_ADD, CONFIG.MAX_INVESTED - stateEntry.totalInvested);
+                let order, usedLeverage = CONFIG.LEVERAGE;
+                try {
+                  order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                } catch (e1) {
+                  console.log(`  [RETRY] ${sym} DCA ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
+                  usedLeverage = CONFIG.LEVERAGE_FALLBACK;
+                  await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
+                  order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                }
+                const newInvested = stateEntry.totalInvested + addAmount;
+                updateState(state, sym, curCandleTime, newInvested);
+                saveState(state);
+                console.log(`  [DCA] ${sym} +$${addAmount} 추가 (총 $${newInvested}) orderId: ${order.orderId} qty: ${order.origQty}`);
+                r.orderStatus = `DCA +$${addAmount} | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
+              }
             } else {
               let order, usedLeverage = CONFIG.LEVERAGE;
               try {
@@ -483,6 +526,8 @@ async function main() {
                 await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
                 order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
               }
+              updateState(state, sym, curCandleTime, CONFIG.ORDER_USDT);
+              saveState(state);
               console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
               r.orderStatus = `매수 완료 | qty: ${order.origQty} | ${usedLeverage}x`;
             }
