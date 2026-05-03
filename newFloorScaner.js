@@ -226,6 +226,16 @@ async function hasOpenPosition(symbol, hedgeMode) {
   return data.some(p => Math.abs(parseFloat(p.positionAmt)) > 0);
 }
 
+async function setMarginType(symbol) {
+  const qs = `symbol=${symbol}&marginType=ISOLATED&timestamp=${Date.now()}`;
+  try {
+    await httpPostSigned("/fapi/v1/marginType", `${qs}&signature=${sign(qs)}`);
+  } catch (e) {
+    // -4046: 이미 ISOLATED 설정됨 → 무시
+    if (!e.message.includes("-4046")) throw e;
+  }
+}
+
 async function setLeverage(symbol, leverage) {
   const qs = `symbol=${symbol}&leverage=${leverage}&timestamp=${Date.now()}`;
   return httpPostSigned("/fapi/v1/leverage", `${qs}&signature=${sign(qs)}`);
@@ -461,11 +471,13 @@ async function main() {
             } else {
               let order, usedLeverage = CONFIG.LEVERAGE;
               try {
+                await setMarginType(sym);
                 await setLeverage(sym, CONFIG.LEVERAGE);
                 order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
               } catch (e1) {
                 console.log(`  [RETRY] ${sym} ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
                 usedLeverage = CONFIG.LEVERAGE_FALLBACK;
+                await setMarginType(sym);
                 await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
                 order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
               }
