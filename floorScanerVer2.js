@@ -7,7 +7,7 @@ const https  = require("https");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "floorScanerVer2 v5";
+const VERSION = "floorScanerVer2 v6";
 
 const CONFIG = {
   BASE_URL:        "https://fapi.binance.com",
@@ -17,7 +17,7 @@ const CONFIG = {
   REQUEST_DELAY:   120,
   RSI_PERIOD:      14,
   RSI_THRESHOLD:   35,
-  VOL_RATIO_MIN:   0.95,
+
   LOG_FILE:        path.join(__dirname, "floor_v2_log.txt"),
 };
 
@@ -125,16 +125,13 @@ function analyzeWithLog(symbol, klines) {
   const cur     = klines[lastIdx];
   const prev    = klines[lastIdx - 1];
 
-  // 1. 양봉
+  // 1. 현재봉 양봉
   if (cur.close <= cur.open)
-    return { pass: false, reason: `음봉 (open:${cur.open.toFixed(4)} close:${cur.close.toFixed(4)})` };
+    return { pass: false, reason: `현재봉 음봉 (open:${cur.open.toFixed(4)} close:${cur.close.toFixed(4)})` };
 
-  // 2. 거래량 돌파 (현재봉 경과 시간 기준 1시간 환산)
-  const elapsedRatio = Math.min(1, Math.max(10 / 60, (Date.now() - cur.openTime) / 3_600_000));
-  const projectedVol = cur.volume / elapsedRatio;
-  const volRatio = projectedVol / prev.volume;
-  if (volRatio <= CONFIG.VOL_RATIO_MIN)
-    return { pass: false, reason: `거래량 미달 (추정 ${volRatio.toFixed(2)}x, 기준 ${CONFIG.VOL_RATIO_MIN}x, 경과 ${Math.round(elapsedRatio * 60)}분)` };
+  // 2. 직전봉 음봉
+  if (prev.close >= prev.open)
+    return { pass: false, reason: `직전봉 양봉 (open:${prev.open.toFixed(4)} close:${prev.close.toFixed(4)})` };
 
   // 3. RSI (직전봉)
   const prevCloses = closes.slice(0, -1);
@@ -156,7 +153,6 @@ function analyzeWithLog(symbol, klines) {
     pass: true,
     price: cur.close, rsi: +rsi.toFixed(1),
     bbLower: +bbLower.toFixed(4),
-    volRatio: +volRatio.toFixed(2),
   };
 }
 
@@ -167,7 +163,7 @@ async function main() {
   log(`[${new Date().toLocaleString("ko-KR")}] ${VERSION} 시작`);
 
   // 조건별 카운터
-  const counter = { 음봉: 0, 거래량: 0, RSI: 0, BB하단: 0, 통과: 0 };
+  const counter = { 현재봉음봉: 0, 직전봉양봉: 0, RSI: 0, BB하단: 0, 통과: 0 };
   const passed = [];
 
   try {
@@ -187,7 +183,7 @@ async function main() {
         if (result.pass) {
           counter["통과"]++;
           passed.push({ symbol: sym, ...result, vol: volMap[sym], price: priceMap[sym] });
-          log(`✅ ${sym.padEnd(12)} 통과! RSI:${result.rsi} BB:${result.bbLower} vol:${result.volRatio}x`);
+          log(`✅ ${sym.padEnd(12)} 통과! RSI:${result.rsi} BB:${result.bbLower}`);
         } else {
           // 탈락 이유 첫 단어로 카운터 분류
           const key = Object.keys(counter).find(k => result.reason.includes(k));
@@ -203,8 +199,8 @@ async function main() {
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     log(`\n${"─".repeat(50)}`);
     log(`[조건별 탈락 요약] (${elapsed}초)`);
-    log(`  양봉 아님    : ${counter["음봉"]}개`);
-    log(`  거래량 미달  : ${counter["거래량"]}개`);
+    log(`  현재봉 음봉  : ${counter["현재봉음봉"]}개`);
+    log(`  직전봉 양봉  : ${counter["직전봉양봉"]}개`);
     log(`  RSI 초과     : ${counter["RSI"]}개`);
     log(`  BB하단 미이탈: ${counter["BB하단"]}개`);
     log(`  최종 통과    : ${counter["통과"]}개`);
@@ -216,7 +212,7 @@ async function main() {
       log("\n[최종 통과 종목]");
       for (const r of passed.sort((a, b) => a.rsi - b.rsi)) {
         const vol = r.vol >= 1e9 ? (r.vol/1e9).toFixed(1)+"B" : (r.vol/1e6).toFixed(0)+"M";
-        log(`  ${r.symbol.padEnd(12)} RSI:${r.rsi} BB:${r.bbLower} vol:${r.volRatio}x ${vol}`);
+        log(`  ${r.symbol.padEnd(12)} RSI:${r.rsi} BB:${r.bbLower} ${vol}`);
       }
     }
 

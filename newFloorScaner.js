@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v20";
+const VERSION = "2026-05-03 v21";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -258,9 +258,8 @@ function analyze(symbol, klines) {
 
   if (cur.close <= cur.open) return null;
 
-  // 거래량 돌파: 현재봉 경과 시간 기준 1시간 환산 비교
-  const elapsedRatio = Math.min(1, Math.max(10 / 60, (Date.now() - cur.openTime) / 3_600_000));
-  if ((cur.volume / elapsedRatio) <= prev.volume * 0.95) return null;
+  // 직전봉 음봉
+  if (prev.close >= prev.open) return null;
 
   const prevCloses = closes.slice(0, -1);
 
@@ -274,10 +273,9 @@ function analyze(symbol, klines) {
 
   return {
     symbol,
-    price:       cur.close,
-    rsi:         +rsi.toFixed(1),
-    bbLower:     +bbLower.toFixed(4),
-    volRatio:    +((cur.volume / elapsedRatio) / prev.volume).toFixed(2),
+    price:   cur.close,
+    rsi:     +rsi.toFixed(1),
+    bbLower: +bbLower.toFixed(4),
   };
 }
 
@@ -304,7 +302,7 @@ function formatMessage(results, elapsed, total) {
     const vol = r.vol >= 1e9 ? (r.vol / 1e9).toFixed(1) + "B" : (r.vol / 1e6).toFixed(0) + "M";
     msg += `\n<b>${r.symbol}</b>  $${r.price}\n`;
     msg += `  RSI(직전): <b>${r.rsi}</b> | BB하단: ${r.bbLower}\n`;
-    msg += `  거래량: ${vol} | 직전봉 대비 <b>${r.volRatio}x</b>\n`;
+    msg += `  거래량: ${vol}\n`;
     if (r.orderStatus) {
       const icon = r.orderStatus.startsWith("매수 완료") ? "✅" : r.orderStatus.startsWith("이미") ? "⏭" : "❌";
       msg += `  ${icon} ${r.orderStatus}\n`;
