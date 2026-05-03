@@ -25,6 +25,7 @@ const CONFIG = {
   RSI_THRESHOLD:      35,
   ORDER_USDT:         1000,
   LEVERAGE:           20,
+  EXCLUDE_SYMBOLS:    ["PLAYUSDT", "RAVEUSDT"],
   LEVERAGE_FALLBACK:  10,
   SL_PCT:             3,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
@@ -448,7 +449,8 @@ async function main() {
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const { volMap, priceMap } = await getVolumes();
     const symbols = allSymbols
-      .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
+      .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT)
+      .filter(s => !CONFIG.EXCLUDE_SYMBOLS.includes(s));
 
     const total   = symbols.length;
     const results = [];
