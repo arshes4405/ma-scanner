@@ -168,30 +168,35 @@ async function main() {
 
   console.log(`\n\n스캔 완료. 유효 종목: ${results.length}개\n`);
 
-  // 손익 기준 워스트
+  const printTable = (list) => {
+    console.log(`${"─".repeat(58)}`);
+    console.log(` ${"심볼".padEnd(20)} ${"거래".padStart(4)} ${"승률".padStart(7)} ${"손익".padStart(14)}`);
+    console.log(`${"─".repeat(58)}`);
+    for (const r of list) {
+      const pnlStr = (r.totalPnl >= 0 ? "+" : "") + r.totalPnl.toFixed(2) + " USDT";
+      console.log(` ${r.sym.padEnd(20)} ${String(r.trades).padStart(4)} ${(r.winRate.toFixed(1) + "%").padStart(7)} ${pnlStr.padStart(14)}`);
+    }
+  };
+
+  // 손익 워스트
   const worstPnl     = [...results].sort((a, b) => a.totalPnl - b.totalPnl).slice(0, CONFIG.TOP_N);
-  // 승률 기준 워스트
+  // 승률 워스트
   const worstWinRate = [...results].sort((a, b) => a.winRate - b.winRate).slice(0, CONFIG.TOP_N);
+  // 패 > 승 종목 (승률 50% 미만, 손익 기준 정렬)
+  const moreLoss     = results.filter(r => r.winRate < 50).sort((a, b) => a.totalPnl - b.totalPnl);
 
   console.log(`▶ 손익 워스트 ${CONFIG.TOP_N}`);
-  console.log(`${"─".repeat(58)}`);
-  console.log(` ${"심볼".padEnd(20)} ${"거래".padStart(4)} ${"승률".padStart(7)} ${"손익".padStart(12)}`);
-  console.log(`${"─".repeat(58)}`);
-  for (const r of worstPnl) {
-    console.log(` ${r.sym.padEnd(20)} ${String(r.trades).padStart(4)} ${(r.winRate.toFixed(1) + "%").padStart(7)} ${(r.totalPnl >= 0 ? "+" : "") + r.totalPnl.toFixed(2) + " USDT".padStart(12)}`);
-  }
+  printTable(worstPnl);
 
   console.log(`\n▶ 승률 워스트 ${CONFIG.TOP_N}`);
-  console.log(`${"─".repeat(58)}`);
-  console.log(` ${"심볼".padEnd(20)} ${"거래".padStart(4)} ${"승률".padStart(7)} ${"손익".padStart(12)}`);
-  console.log(`${"─".repeat(58)}`);
-  for (const r of worstWinRate) {
-    console.log(` ${r.sym.padEnd(20)} ${String(r.trades).padStart(4)} ${(r.winRate.toFixed(1) + "%").padStart(7)} ${(r.totalPnl >= 0 ? "+" : "") + r.totalPnl.toFixed(2) + " USDT".padStart(12)}`);
-  }
+  printTable(worstWinRate);
 
-  // 두 리스트 교집합 (손익도 나쁘고 승률도 낮은 종목)
-  const pnlSet  = new Set(worstPnl.map(r => r.sym));
-  const both    = worstWinRate.filter(r => pnlSet.has(r.sym));
+  console.log(`\n▶ 패 > 승 종목 (승률 50% 미만, 총 ${moreLoss.length}개)`);
+  printTable(moreLoss);
+
+  // 손익+승률 교집합 (제외 추천)
+  const pnlSet = new Set(worstPnl.map(r => r.sym));
+  const both   = worstWinRate.filter(r => pnlSet.has(r.sym));
   if (both.length) {
     console.log(`\n▶ 손익+승률 모두 워스트 (제외 추천)`);
     console.log(both.map(r => `"${r.sym}"`).join(", "));
