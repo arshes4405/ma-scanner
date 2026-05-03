@@ -1,6 +1,6 @@
 const https = require("https");
 
-const VERSION = "2026-05-03 v1";
+const VERSION = "2026-05-03 v2";
 
 const CONFIG = {
   BASE_URL:      "https://fapi.binance.com",
@@ -10,11 +10,12 @@ const CONFIG = {
   RSI_THRESHOLD: 35,
   RSI_CUR_MAX:   38,         // 현재봉 RSI 임계값 (mid-candle 근사치)
   ORDER_USDT:    1000,
-  LEVERAGE:      20,
-  TP_PCT:        5,
-  SL_PCT:        3,
+  TP_HALF_PCT:   5,          // 반익절
+  TP_FULL_PCT:   10,         // 완익절
+  BE_CLOSE_PCT:  0.5,        // 반익 후 본절
+  SL_PCT:        3,          // 손절
   CAPITAL:       5000,
-  MAX_POSITIONS: 5,          // 동시 최대 포지션 (5000 / 1000)
+  MAX_POSITIONS: 5,
   SAMPLE_SIZE:   10,
 };
 
@@ -88,37 +89,57 @@ function simulateSymbol(symbol, klines) {
   const trades = [];
   const startIdx = 150;
   const endIdx   = klines.length - 1;
-  let openPos    = null;
+  let openPos    = null; // { entry, halfDone }
 
   for (let i = startIdx; i <= endIdx; i++) {
     const k = klines[i];
 
-    // 포지션 청산 체크
     if (openPos) {
-      const tpPrice = openPos.entry * (1 + CONFIG.TP_PCT / 100);
-      const slPrice = openPos.entry * (1 - CONFIG.SL_PCT / 100);
+      const slPrice       = openPos.entry * (1 - CONFIG.SL_PCT      / 100);
+      const tpHalfPrice   = openPos.entry * (1 + CONFIG.TP_HALF_PCT  / 100);
+      const tpFullPrice   = openPos.entry * (1 + CONFIG.TP_FULL_PCT  / 100);
+      const beClosePrice  = openPos.entry * (1 + CONFIG.BE_CLOSE_PCT / 100);
 
-      let exitPrice = null, action = null;
-
-      if (k.low <= slPrice && k.high >= tpPrice) {
-        // 같은 봉에 SL/TP 둘 다 → 보수적으로 SL
-        exitPrice = slPrice; action = "SL";
-      } else if (k.low <= slPrice) {
-        exitPrice = slPrice; action = "SL";
-      } else if (k.high >= tpPrice) {
-        exitPrice = tpPrice; action = "TP";
-      }
-
-      if (exitPrice) {
-        const pnl = CONFIG.ORDER_USDT * (exitPrice - openPos.entry) / openPos.entry;
-        trades.push({ symbol, action, entry: openPos.entry, exit: exitPrice, pnl: +pnl.toFixed(2) });
-        openPos = null;
+      if (!openPos.halfDone) {
+        // ── 반익 전 ──────────────────────────────────────
+        if (k.high >= tpFullPrice) {
+          // 완익 직행 (5%·10% 모두 통과)
+          const pnl = CONFIG.ORDER_USDT * (0.5 * CONFIG.TP_HALF_PCT + 0.5 * CONFIG.TP_FULL_PCT) / 100;
+          trades.push({ symbol, action: "TP_FULL", pnl: +pnl.toFixed(2) });
+          openPos = null;
+        } else if (k.low <= slPrice && k.high >= tpHalfPrice) {
+          // 같은 봉에 SL·반익 동시 → 보수적으로 SL
+          const pnl = CONFIG.ORDER_USDT * (-CONFIG.SL_PCT / 100);
+          trades.push({ symbol, action: "SL", pnl: +pnl.toFixed(2) });
+          openPos = null;
+        } else if (k.low <= slPrice) {
+          const pnl = CONFIG.ORDER_USDT * (-CONFIG.SL_PCT / 100);
+          trades.push({ symbol, action: "SL", pnl: +pnl.toFixed(2) });
+          openPos = null;
+        } else if (k.high >= tpHalfPrice) {
+          // 반익 완료 → 나머지 절반 계속 보유
+          openPos.halfDone = true;
+          openPos.halfPnl  = CONFIG.ORDER_USDT * 0.5 * (CONFIG.TP_HALF_PCT / 100);
+        }
+      } else {
+        // ── 반익 후 ──────────────────────────────────────
+        if (k.high >= tpFullPrice) {
+          // 완익
+          const pnl = openPos.halfPnl + CONFIG.ORDER_USDT * 0.5 * (CONFIG.TP_FULL_PCT / 100);
+          trades.push({ symbol, action: "TP_FULL", pnl: +pnl.toFixed(2) });
+          openPos = null;
+        } else if (k.low <= beClosePrice) {
+          // 본절 청산
+          const pnl = openPos.halfPnl + CONFIG.ORDER_USDT * 0.5 * (CONFIG.BE_CLOSE_PCT / 100);
+          trades.push({ symbol, action: "BE_CLOSE", pnl: +pnl.toFixed(2) });
+          openPos = null;
+        }
       }
     }
 
     // 진입 체크 (포지션 없을 때만)
     if (!openPos && checkEntry(klines, i)) {
-      openPos = { entry: k.close, entryIdx: i };
+      openPos = { entry: k.close, halfDone: false, halfPnl: 0 };
     }
   }
 
@@ -154,21 +175,25 @@ async function main() {
     allTrades.push(...trades);
 
     const pnl  = trades.reduce((s, t) => s + t.pnl, 0);
-    const wins = trades.filter(t => t.action === "TP").length;
+    const wins = trades.filter(t => t.action !== "SL").length;
     console.log(` → ${trades.length}건 | 승${wins}/패${trades.length - wins} | ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDT`);
     await sleep(100);
   }
 
   // 전체 요약
   const totalPnl  = allTrades.reduce((s, t) => s + t.pnl, 0);
-  const totalWins = allTrades.filter(t => t.action === "TP").length;
-  const winRate   = allTrades.length ? (totalWins / allTrades.length * 100).toFixed(1) : 0;
+  const slCount   = allTrades.filter(t => t.action === "SL").length;
+  const beCount   = allTrades.filter(t => t.action === "BE_CLOSE").length;
+  const tpCount   = allTrades.filter(t => t.action === "TP_FULL").length;
+  const winCount  = tpCount + beCount;
+  const winRate   = allTrades.length ? (winCount / allTrades.length * 100).toFixed(1) : 0;
   const finalBal  = CONFIG.CAPITAL + totalPnl;
 
   console.log(`\n${"─".repeat(55)}`);
   console.log(` 기간        : 최근 30일 (1시간봉)`);
   console.log(` 시작 자금   : $${CONFIG.CAPITAL.toLocaleString()}`);
-  console.log(` 트레이드    : ${allTrades.length}건 | 승률 ${winRate}% (${totalWins}승 ${allTrades.length - totalWins}패)`);
+  console.log(` 트레이드    : ${allTrades.length}건 | 승률 ${winRate}%`);
+  console.log(` 완익(10%)   : ${tpCount}건 | 본절(0.5%): ${beCount}건 | 손절(-3%): ${slCount}건`);
   console.log(` 실현 손익   : ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USDT`);
   console.log(` 최종 잔고   : $${finalBal.toFixed(2)}`);
   console.log(` 수익률      : ${((finalBal / CONFIG.CAPITAL - 1) * 100).toFixed(1)}%`);
