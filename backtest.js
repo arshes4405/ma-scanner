@@ -15,7 +15,7 @@ const CONFIG = {
   BE_CLOSE_PCT:  0.5,        // 반익 후 본절
   SL_PCT:        3,          // 손절
   CAPITAL:       5000,
-  SAMPLE_SIZE:   50,
+  SAMPLE_SIZE:   200,
 };
 
 function httpGet(url) {
