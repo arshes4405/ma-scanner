@@ -7,7 +7,7 @@ const https  = require("https");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "floorScanerVer2 v6";
+const VERSION = "floorScanerTester v1";
 
 const CONFIG = {
   BASE_URL:        "https://fapi.binance.com",
@@ -17,6 +17,7 @@ const CONFIG = {
   REQUEST_DELAY:   120,
   RSI_PERIOD:      14,
   RSI_THRESHOLD:   35,
+  RSI_CUR_MAX:     40,
 
   LOG_FILE:        path.join(__dirname, "floor_v2_log.txt"),
 };
@@ -141,6 +142,11 @@ function analyzeWithLog(symbol, klines) {
   if (rsi >= CONFIG.RSI_THRESHOLD)
     return { pass: false, reason: `RSI ${rsi.toFixed(1)} (기준 ${CONFIG.RSI_THRESHOLD} 초과)` };
 
+  // 4. 현재봉 RSI 40 미만 (고점 진입 방지)
+  const curRsi = calcRSI(closes, CONFIG.RSI_PERIOD);
+  if (curRsi === null || curRsi >= CONFIG.RSI_CUR_MAX)
+    return { pass: false, reason: `현재봉 RSI ${curRsi?.toFixed(1)} >= ${CONFIG.RSI_CUR_MAX} (고점)` };
+
   // 5. BB 하단 이탈 (직전봉 저가)
   const bbLower = calcBollingerLower(prevCloses);
   if (!bbLower)
@@ -163,7 +169,7 @@ async function main() {
   log(`[${new Date().toLocaleString("ko-KR")}] ${VERSION} 시작`);
 
   // 조건별 카운터
-  const counter = { 현재봉음봉: 0, 직전봉양봉: 0, RSI: 0, BB하단: 0, 통과: 0 };
+  const counter = { 현재봉음봉: 0, 직전봉양봉: 0, RSI: 0, 현재봉RSI: 0, BB하단: 0, 통과: 0 };
   const passed = [];
 
   try {
@@ -202,6 +208,7 @@ async function main() {
     log(`  현재봉 음봉  : ${counter["현재봉음봉"]}개`);
     log(`  직전봉 양봉  : ${counter["직전봉양봉"]}개`);
     log(`  RSI 초과     : ${counter["RSI"]}개`);
+    log(`  현재봉RSI 고점: ${counter["현재봉RSI"]}개`);
     log(`  BB하단 미이탈: ${counter["BB하단"]}개`);
     log(`  최종 통과    : ${counter["통과"]}개`);
     log(`${"─".repeat(50)}`);

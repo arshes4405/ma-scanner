@@ -23,6 +23,7 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
+  RSI_CUR_MAX:        40,
   ORDER_USDT:         1000,
   MAX_PRICE_USDT:     2000,
   LEVERAGE:           20,
@@ -265,6 +266,10 @@ function analyze(symbol, klines) {
 
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
+
+  // 현재봉 RSI가 이미 40 이상이면 고점 진입 방지
+  const curRsi = calcRSI(closes, CONFIG.RSI_PERIOD);
+  if (curRsi === null || curRsi >= CONFIG.RSI_CUR_MAX) return null;
 
   // 직전봉 저가가 볼린저 하단(20, 2) 아래로 이탈
   const bbLower = calcBollingerLower(prevCloses);
