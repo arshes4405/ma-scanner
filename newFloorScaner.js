@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v16";
+const VERSION = "2026-05-03 v17";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -318,8 +318,8 @@ async function checkAndClosePositions(hedgeMode, stepSizes) {
     }
 
     // 스탑로스: 반익절 후 본절(0%), 미익절 시 -3%
-    const slThreshold = tpState[sym] ? 0 : -CONFIG.SL_PCT;
-    const slLabel     = tpState[sym] ? "본절 청산" : `스탑로스 -${CONFIG.SL_PCT}%`;
+    const slThreshold = tpState[sym] ? 0.5 : -CONFIG.SL_PCT;
+    const slLabel     = tpState[sym] ? "+0.5% 청산" : `스탑로스 -${CONFIG.SL_PCT}%`;
     if (pnlPct <= slThreshold) {
       console.log(`  [SL]  ${sym} ${slLabel} 도달 → 시장가 청산`);
       try {
