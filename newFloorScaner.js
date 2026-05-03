@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v17";
+const VERSION = "2026-05-03 v18";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -355,7 +355,7 @@ function analyze(symbol, klines) {
 
   // 거래량 돌파: 현재봉 경과 시간 기준 1시간 환산 비교
   const elapsedRatio = Math.min(1, Math.max(10 / 60, (Date.now() - cur.openTime) / 3_600_000));
-  if ((cur.volume / elapsedRatio) <= prev.volume) return null;
+  if ((cur.volume / elapsedRatio) <= prev.volume * 0.95) return null;
 
   const prevCloses = closes.slice(0, -1);
 
