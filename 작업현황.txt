@@ -1,0 +1,208 @@
+================================================================
+MA 스캐너 프로젝트 작업현황
+최종 업데이트: 2026-05-04
+================================================================
+
+▶ 프로젝트 개요
+  Binance Futures 1시간봉 기준 바닥 스캐너 + 자동매수/매도 시스템
+
+----------------------------------------------------------------
+▶ 인프라
+----------------------------------------------------------------
+  [서버]
+  - 플랫폼 : Oracle Cloud (Always Free)
+  - OS      : Ubuntu
+  - IP      : 168.110.102.29
+  - SSH     : ssh -i ssh-key-2026-05-02.key ubuntu@168.110.102.29
+
+  [파일 경로 - 서버]
+  - 바닥 스캐너   : /home/ubuntu/scanner/newFloorScaner.js
+  - 포지션 모니터 : /home/ubuntu/scanner/positionMonitor.js
+  - 테스터        : /home/ubuntu/scanner/floorScanerTester.js
+  - MA돌파 스캐너 : /home/ubuntu/scanner/scanner-tg.js
+  - API 테스트    : /home/ubuntu/scanner/binance-test.js
+  - 쿨다운 (바닥) : /home/ubuntu/scanner/floor_state.json
+  - 반익절 상태   : /home/ubuntu/scanner/tp_state.json
+  - 거래 로그     : /home/ubuntu/scanner/trade_log.csv
+  - 스캐너 로그   : /home/ubuntu/scanner/floor_log.txt
+  - 모니터 로그   : /home/ubuntu/scanner/monitor_log.txt
+
+  [GitHub]
+  - 레포    : https://github.com/arshes4405/ma-scanner
+  - 브랜치  : main
+
+  [텔레그램 봇]
+  - 봇         : @ma_scanner_alertbot
+  - TG_TOKEN   : 8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII
+  - TG_CHAT_ID : 133371996
+
+  [crontab]
+  - 바닥 스캐너   : 5-55/10 * * * * /usr/bin/node /home/ubuntu/scanner/newFloorScaner.js >> /home/ubuntu/scanner/floor_log.txt 2>&1
+  - 포지션 모니터 : * * * * * /usr/bin/node /home/ubuntu/scanner/positionMonitor.js >> /home/ubuntu/scanner/monitor_log.txt 2>&1
+
+  [서버 alias (~/.bashrc)]
+  - scanupdate : newFloorScaner.js GitHub → 서버 다운로드
+  - scanrun    : newFloorScaner.js 수동 실행
+  - monupdate  : positionMonitor.js GitHub → 서버 다운로드
+  - scanlog    : floor_log.txt tail -f
+  - monlog     : monitor_log.txt tail -f
+
+----------------------------------------------------------------
+▶ 스캐너 목록 및 로직
+----------------------------------------------------------------
+
+  ┌─ [1] MA 돌파 스캐너 (scanner-tg.js) ─────────────────────┐
+  │  MA 역배열 상태에서 MA 상향 돌파 종목 탐지                │
+  │  [실행] GitHub Actions: 매 2시간 UTC :30분 자동 실행      │
+  └───────────────────────────────────────────────────────────┘
+
+  ┌─ [2] 바닥 스캐너 (newFloorScaner.js) v28 ─────────────────┐
+  │  매수 전용 (SL/TP는 positionMonitor.js 분리)              │
+  │                                                           │
+  │  [진입 조건] 전체 AND                                     │
+  │  1. 현재봉 양봉                                           │
+  │  2. 직전봉 음봉                                           │
+  │  3. 직전봉 RSI(14) < 35 (알트) / < 45 (메이저)           │
+  │  4. 현재봉 RSI < (직전봉RSI + 2 + floor(경과분/10))       │
+  │     - 직전RSI=30, 5분→32, 15분→33, 55분→37               │
+  │  5. 현재가 < 직전봉 (고가+저가)/2                         │
+  │  6. 직전봉 (저가+종가)/2 < 볼린저 임계(20,2)              │
+  │     - 알트: 하단(fromLower=0)                             │
+  │     - 메이저: 하단+33%(fromLower=0.33)                    │
+  │  7. 24시간 거래량 >= $1,000,000                           │
+  │                                                           │
+  │  [자동매수]                                               │
+  │  - 알트 신규: $1,000 | 20x Isolated                      │
+  │  - 알트 DCA : 다음 봉 재신호 시 $100 추가, 최대 $1,500    │
+  │  - 메이저 신규: $10,000 | 50x Cross (DCA 없음)            │
+  │  - floor_state.json: candleTime + totalInvested 추적      │
+  │                                                           │
+  │  [코인 그룹]                                              │
+  │  - 메이저 : ETHUSDT, HYPEUSDT (Cross 50x, RSI<45, BB+33%)│
+  │  - 1군    : 성적 검증 완료 우량 알트 (현재 없음)          │
+  │  - 2군    : 일반 알트 기본 조건 (현재 전종목)             │
+  │  - 3군    : 성적 양호 → 승격 대기 (현재 없음)             │
+  │  - 블랙   : PLAY RAVE MEGA QNT XVS WLD BRU MERL EVAA     │
+  │             ARIA BASED STX MANA COMP HBAR WOO ICP ACH T  │
+  │             DUSK IOST FLOW FET HIGH BEL GTC (25종목)      │
+  │                                                           │
+  │  [실행] crontab: 5-55/10 * * * * (5분부터 10분마다)       │
+  └───────────────────────────────────────────────────────────┘
+
+  ┌─ [3] 포지션 모니터 (positionMonitor.js) v2 ───────────────┐
+  │  SL/TP 체크 전용                                          │
+  │                                                           │
+  │  [익절/손절 시나리오]                                     │
+  │  - 반익절 전  : 진입가 -3% 시 전량 청산                   │
+  │  - +5% 도달   : 절반 매도 (tp_state.json 기록)            │
+  │  - 반익절 후  : 수익률 +0.5% 이하 시 남은 절반 청산       │
+  │  - $2,000 이상 코인 제외                                  │
+  │                                                           │
+  │  [MAX_POSITIONS 로직] MAX_POSITIONS = 55                  │
+  │  - 포지션 55개 초과 시 수익률 +3% 이상 종목 자동 청산     │
+  │  - 수익률 높은 순으로 정리, 액션: MAX_POS_CLOSE           │
+  │                                                           │
+  │  [거래 로그] trade_log.csv                                │
+  │  - 액션: TP_HALF / SL / BE_CLOSE / MAX_POS_CLOSE         │
+  │  - 수동 청산 및 수수료(왕복 ~0.1%) 미포함                 │
+  │                                                           │
+  │  [실행] crontab: * * * * * (1분마다)                      │
+  └───────────────────────────────────────────────────────────┘
+
+  ┌─ [4] 테스터 (floorScanerTester.js) v2 ────────────────────┐
+  │  매수 없음, 조건별 탈락 로그 확인용                       │
+  │  조건 변경 시 tester 먼저 검증 → live 반영                │
+  │  [출력] 코인별 탈락 이유 + 조건별 요약 카운터             │
+  │  [실행] 수동                                              │
+  └───────────────────────────────────────────────────────────┘
+
+----------------------------------------------------------------
+▶ 코드 업데이트 워크플로우
+----------------------------------------------------------------
+  ※ 조건 변경 시 반드시 floorScanerTester.js 먼저 적용,
+     결과 확인 후 newFloorScaner.js 반영
+
+  1. Claude에게 수정 요청 (tester 먼저)
+  2. 서버에서 tester 확인:
+     curl -o /home/ubuntu/scanner/floorScanerTester.js "https://raw.githubusercontent.com/arshes4405/ma-scanner/main/floorScanerTester.js?$(date +%s)"
+     node /home/ubuntu/scanner/floorScanerTester.js
+  3. 확인 후 live 반영: scanupdate
+  4. 포지션 모니터 업데이트: monupdate
+
+----------------------------------------------------------------
+▶ 완료된 작업 이력
+----------------------------------------------------------------
+  [2026-05-02]
+  - Oracle Cloud 서버 세팅
+  - scanner-tg.js 기본 로직 구현
+  - GitHub 레포 생성 및 Actions 워크플로우 추가
+  - newFloorScaner.js v12 작성
+    · 조건: 양봉 + 거래량(시간환산) + RSI<35 + BB하단 이탈
+    · 자동매수 $500, 20x, 소프트 스탑로스 -3%
+
+  [2026-05-03]
+  - v13: 매수금액 $1,000, 반익절(+5%) 추가
+  - v14: $2,000 이상 코인 매수 제외
+  - v15: $2,000 이상 코인 SL/TP 모니터링도 제외
+  - v16: 반익절 후 스탑 본절(0%)
+  - v17: 반익절 후 스탑 +0.5%로 조정
+  - v18: 거래량 조건 직전봉 × 0.95로 완화
+  - v19: trade_log.csv 매도 거래 기록 추가
+  - v20: SL/TP 분리 → positionMonitor.js 신규 생성
+  - v21: 직전봉 음봉 조건 추가, 거래량 조건 제거
+  - v22: BB하단 기준 직전봉 (저가+종가)/2 평균으로 변경
+  - v23: 현재봉 RSI 경과시간 보정 추가 (5분→36, 15분→37...)
+  - v24: 현재가 직전봉 고저 평균 이하 조건 추가
+  - floorScanerVer2.js → floorScanerTester.js 이름 변경
+  - crontab: 배치 시간 */10 → 5-55/10 (5분부터 시작)
+
+  [2026-05-03~04]
+  - backtest.js v5: 6개월 페이지네이션 캔들, RSI 상대임계값
+    · SL -3%, 익절 +5% (전량), 단순 전략
+    · 메이저 조건 비교: RSI<35 vs RSI<45, BB하단 vs BB+33%
+    · 결과: ETH+HYPE / RSI<45 / BB+33% 최적 → 6개월 +$7,500
+    · 월별 손익 집계 추가
+  - findBadCoins.js v2: 전 종목 6개월 스캔, 손익/승률 출력
+    · 손실 53종목 전체 + 워스트 20 + 제외 추천 목록 생성
+  - positionMonitor.js v2: MAX_POSITIONS=55 로직 추가
+    · 55개 초과 시 수익률 +3% 이상 종목 자동 청산
+  - trade_log.csv: source 컬럼 추가 (SYSTEM/MANUAL 구분)
+  - v25: DCA 로직 추가
+    · 동일 1시간봉 재탐지 시 스킵
+    · 다음 봉 재신호 시 $100 추가매수, 최대 $1,500
+    · floor_state.json에 candleTime + totalInvested 추적
+  - v26: 현재봉 RSI 임계값 절대값 → 상대값 변경
+    · curRsiMax = 직전봉RSI + 2 + floor(경과분/10)
+  - v27: 메이저 코인 별도 로직 추가
+    · ETHUSDT, HYPEUSDT: Cross 50x, $10,000 매수, DCA 없음
+    · RSI<45, BB+33% 적용 (백테스트 최적 조건)
+  - v28: 코인 그룹 구조 추가
+    · 메이저/1군/2군/3군/블랙 5단계 그룹
+    · 블랙리스트 25종목 (6개월 손실 성적 기반)
+    · BTC/SOL 메이저에서 제외 (비트 추종 성향)
+  - 제외 코인 추가: EVAA, ARIA, BASED, STX, MANA, COMP,
+    HBAR, WOO, ICP, ACH, T, DUSK, IOST, FLOW, FET, HIGH, BEL, GTC
+
+----------------------------------------------------------------
+▶ 향후 계획 (2-3개월 데이터 후 검토)
+----------------------------------------------------------------
+  [ ] trade_log.csv 기반 통계 분석 (승률, 평균 수익률 등)
+  [ ] 수수료(왕복 ~0.1%) 반영 실질 수익 계산
+  [ ] 수동 청산 내역 보완 (바이낸스 체결 내역 API 활용 고려)
+  [ ] 최적 TP/SL 도출 (실거래 데이터 2-3개월 누적 후)
+  [ ] 코인 그룹 승격 시스템 운영
+      - 성적 양호 종목 → 3군 등록 → 1군 승격
+      - 블랙리스트 지속 업데이트
+  [ ] 자금 $5,000 기준 포지션 수 / 사이즈 재검토
+  [ ] 숏 포지션 혼합 전략 검토 (상승 제한 구간 대응)
+
+----------------------------------------------------------------
+▶ 이슈 / 메모
+----------------------------------------------------------------
+  - GitHub Actions는 scanner-tg.js 전용 (매 2시간 UTC :30분)
+  - trade_log.csv: 시스템 매도만 기록, 수동 청산 미포함
+  - 실질 수익률 = pnl_pct - 0.1% (수수료)
+  - ssh-key 파일은 .gitignore 처리됨 (절대 커밋 금지)
+  - Google Drive 컨텍스트 파일 ID: 1GsOnVQQfQtKMmOFZnwGBbjTCXX1IQNI8
+
+================================================================
