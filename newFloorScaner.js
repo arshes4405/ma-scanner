@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-04 v30";
+const VERSION = "2026-05-04 v31";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -24,6 +24,8 @@ const CONFIG = {
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
   ORDER_USDT:          1000,
+  ORDER_USDT_TIER2:    1500,
+  ORDER_USDT_TIER1:    2000,
   ORDER_USDT_ADD:      100,
   MAX_INVESTED:        1500,
   LEVERAGE:            20,
@@ -578,20 +580,23 @@ async function main() {
               console.log(`  [BUY] ${sym} [메이저] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
               r.orderStatus = `매수 완료 [메이저] | qty: ${order.origQty} | ${usedLeverage}x`;
             } else {
-              // 알트 신규 매수: Isolated 20x $1,000
+              // 알트 신규 매수: Isolated 20x
+              const orderAmt = isTier1 ? CONFIG.ORDER_USDT_TIER1
+                             : isTier2 ? CONFIG.ORDER_USDT_TIER2
+                             : CONFIG.ORDER_USDT;
               let order, usedLeverage = CONFIG.LEVERAGE;
               try {
                 await setMarginType(sym);
                 await setLeverage(sym, CONFIG.LEVERAGE);
-                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, orderAmt);
               } catch (e1) {
                 console.log(`  [RETRY] ${sym} ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
                 usedLeverage = CONFIG.LEVERAGE_FALLBACK;
                 await setMarginType(sym);
                 await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
-                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, orderAmt);
               }
-              updateState(state, sym, curCandleTime, CONFIG.ORDER_USDT);
+              updateState(state, sym, curCandleTime, orderAmt);
               saveState(state);
               console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
               r.orderStatus = `매수 완료 | qty: ${order.origQty} | ${usedLeverage}x`;
