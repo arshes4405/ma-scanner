@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v28";
+const VERSION = "2026-05-04 v29";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -33,6 +33,7 @@ const CONFIG = {
   LEVERAGE_MAJOR_FALLBACK: 20,
   RSI_THRESHOLD_MAJOR: 45,
   BB_FROM_LOWER_MAJOR: 0.33,
+  RSI_THRESHOLD_TIER3: 40,
   // ── 코인 그룹 ──────────────────────────────────────────────────
   // 메이저: Cross 50x $10,000 / RSI<45 / BB+33%
   MAJOR_SYMBOLS:  ["ETHUSDT", "HYPEUSDT"],
@@ -502,7 +503,10 @@ async function main() {
       try {
         const klines = await getKlines(sym);
         const isMajor = CONFIG.MAJOR_SYMBOLS.includes(sym);
-        const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR : CONFIG.RSI_THRESHOLD;
+        const isTier3 = CONFIG.TIER3_SYMBOLS.includes(sym);
+        const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR
+                           : isTier3 ? CONFIG.RSI_THRESHOLD_TIER3
+                           : CONFIG.RSI_THRESHOLD;
         const bbFromLower  = isMajor ? CONFIG.BB_FROM_LOWER_MAJOR : 0;
         const r = analyze(sym, klines, rsiThreshold, bbFromLower);
         if (r) {
