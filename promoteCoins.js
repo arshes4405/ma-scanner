@@ -30,6 +30,25 @@ function writeTier(key, symbols) {
   fs.writeFileSync(SCANNER_FILE, src, "utf8");
 }
 
+function readExclude() {
+  const src = fs.readFileSync(SCANNER_FILE, "utf8");
+  const m = src.match(/EXCLUDE_SYMBOLS:\s*\[([\s\S]*?)\]/);
+  if (!m) return [];
+  return m[1].match(/"([^"]+)"/g)?.map(s => s.replace(/"/g, "")) || [];
+}
+
+function addToExclude(symbols) {
+  let src = fs.readFileSync(SCANNER_FILE, "utf8");
+  const current = readExclude();
+  const toAdd = symbols.filter(s => !current.includes(s));
+  if (!toAdd.length) return 0;
+  // 마지막 항목 뒤에 추가
+  const addStr = toAdd.map(s => `"${s}"`).join(", ");
+  src = src.replace(/(EXCLUDE_SYMBOLS:\s*\[[\s\S]*?)(,?\s*\])/, `$1, ${addStr}$2`);
+  fs.writeFileSync(SCANNER_FILE, src, "utf8");
+  return toAdd.length;
+}
+
 function main() {
   if (!fs.existsSync(CSV_FILE)) {
     console.error("trade_log.csv 없음:", CSV_FILE);
@@ -60,19 +79,23 @@ function main() {
 
   // 티어별 분류 (상위 티어 우선)
   const tierMap = { TIER1: [], TIER2: [], TIER3: [] };
+  const blackList = [];
   const allRows = Object.entries(stats)
     .map(([sym, s]) => ({ sym, ...s, net: s.tp - s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
-    .filter(r => r.net >= 1)
     .sort((a, b) => b.net - a.net);
 
   for (const r of allRows) {
-    if      (r.net >= 5) tierMap.TIER1.push(r);
-    else if (r.net >= 3) tierMap.TIER2.push(r);
-    else                 tierMap.TIER3.push(r);
+    if      (r.net >= 5)  tierMap.TIER1.push(r);
+    else if (r.net >= 3)  tierMap.TIER2.push(r);
+    else if (r.net >= 1)  tierMap.TIER3.push(r);
+    else if (r.net <= -2) blackList.push(r);
   }
 
   // 결과 출력
   console.log(`\n[promoteCoins] trade_log.csv 분석 완료 (TP_HALF/SL 기준)`);
+  if (blackList.length) {
+    console.log(`▶ 블랙 (순익절 <= -2) : ${blackList.length}개 → ${blackList.map(r => r.sym).join(", ")}\n`);
+  }
   console.log(`총 ${Object.keys(stats).length}개 종목\n`);
 
   for (const { key, label, min } of TIER_RULES) {
@@ -99,6 +122,15 @@ function main() {
       if (added.length)   console.log(`[${label}] 추가 (${added.length}개): ${added.join(", ")}`);
       if (removed.length) console.log(`[${label}] 제거 (${removed.length}개): ${removed.join(", ")}`);
       writeTier(key, newList);
+      changed = true;
+    }
+  }
+
+  // 블랙리스트 추가
+  if (blackList.length) {
+    const n = addToExclude(blackList.map(r => r.sym));
+    if (n > 0) {
+      console.log(`[블랙] 추가 (${n}개): ${blackList.map(r => r.sym).join(", ")}`);
       changed = true;
     }
   }
