@@ -4,7 +4,7 @@
  * 실행: node promoteCoins.js
  */
 
-const VERSION = "2026-05-04 v3";
+const VERSION = "2026-05-04 v4";
 
 const fs   = require("fs");
 const path = require("path");
@@ -61,22 +61,25 @@ function main() {
   const header = lines[0].split(",");
   const colSymbol = header.indexOf("symbol");
   const colAction = header.indexOf("action");
+  const colSource = header.indexOf("source");
 
   if (colSymbol === -1 || colAction === -1) {
     console.error("CSV 컬럼 오류:", header);
     process.exit(1);
   }
 
-  // 심볼별 TP/SL 집계 (TP_HALF / SL 만)
+  // 심볼별 TP/SL 집계 (source=SYSTEM + TP_HALF/SL 만)
   const stats = {};
   for (const line of lines.slice(1)) {
     const cols   = line.split(",");
     const sym    = cols[colSymbol]?.trim();
     const action = cols[colAction]?.trim();
+    const source = colSource !== -1 ? cols[colSource]?.trim() : null;
     if (!sym || !action) continue;
+    if (source !== null && source !== "SYSTEM") continue;
     if (!stats[sym]) stats[sym] = { tp: 0, sl: 0 };
-    if (action === "TP_HALF" || action === "AUTO_CLOSE") stats[sym].tp++;
-    else if (action === "SL" || action === "AUTO_SL") stats[sym].sl++;
+    if (action === "TP_HALF") stats[sym].tp++;
+    else if (action === "SL") stats[sym].sl++;
   }
 
   // 티어별 분류 (상위 티어 우선)
