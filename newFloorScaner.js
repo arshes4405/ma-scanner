@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v26";
+const VERSION = "2026-05-03 v27";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -23,13 +23,17 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
-  ORDER_USDT:         1000,
-  ORDER_USDT_ADD:     100,
-  MAX_INVESTED:       1500,
-  LEVERAGE:           20,
+  ORDER_USDT:          1000,
+  ORDER_USDT_ADD:      100,
+  MAX_INVESTED:        1500,
+  LEVERAGE:            20,
+  LEVERAGE_FALLBACK:   10,
+  ORDER_USDT_MAJOR:    10000,
+  LEVERAGE_MAJOR:      50,
+  LEVERAGE_MAJOR_FALLBACK: 20,
+  RSI_THRESHOLD_MAJOR: 40,
   EXCLUDE_SYMBOLS:    ["PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "MERLUSDT", "EVAAUSDT", "ARIAUSDT"],
   MAJOR_SYMBOLS:      ["BTCUSDT", "ETHUSDT", "SOLUSDT", "HYPEUSDT"],
-  LEVERAGE_FALLBACK:  10,
   SL_PCT:             3,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };
@@ -239,12 +243,11 @@ async function hasOpenPosition(symbol, hedgeMode) {
   return data.some(p => Math.abs(parseFloat(p.positionAmt)) > 0);
 }
 
-async function setMarginType(symbol) {
-  const qs = `symbol=${symbol}&marginType=ISOLATED&timestamp=${Date.now()}`;
+async function setMarginType(symbol, type = "ISOLATED") {
+  const qs = `symbol=${symbol}&marginType=${type}&timestamp=${Date.now()}`;
   try {
     await httpPostSigned("/fapi/v1/marginType", `${qs}&signature=${sign(qs)}`);
   } catch (e) {
-    // -4046: 이미 ISOLATED 설정됨 → 무시
     if (!e.message.includes("-4046")) throw e;
   }
 }
@@ -272,7 +275,7 @@ async function placeStopLoss(symbol, entryPrice, qty, tickSize, hedgeMode) {
 }
 
 // ─── 분석 ─────────────────────────────────────────────────────────────────────
-function analyze(symbol, klines) {
+function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD) {
   if (klines.length < CONFIG.CANDLE_LIMIT) return null;
 
   const closes  = klines.map(k => k.close);
@@ -288,7 +291,7 @@ function analyze(symbol, klines) {
   const prevCloses = closes.slice(0, -1);
 
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
-  if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return null;
+  if (rsi === null || rsi >= rsiThreshold) return null;
 
   // 현재봉 RSI 보정: 경과 시간에 따라 임계값 상향 (5분→36, 15분→37, ...)
   const elapsedMin = (Date.now() - cur.openTime) / 60_000;
@@ -339,7 +342,8 @@ function formatMessage(results, elapsed, total) {
   for (const r of results) {
     const vol    = r.vol >= 1e9 ? (r.vol / 1e9).toFixed(1) + "B" : (r.vol / 1e6).toFixed(0) + "M";
     const chgPct = ((r.price - r.open) / r.open * 100).toFixed(2);
-    msg += `\n<b>${r.symbol}</b>  $${r.open} → $${r.price} (${chgPct >= 0 ? "+" : ""}${chgPct}%)\n`;
+    const majorTag = r.isMajor ? " 🔵[메이저 Cross 50x]" : "";
+    msg += `\n<b>${r.symbol}</b>${majorTag}  $${r.open} → $${r.price} (${chgPct >= 0 ? "+" : ""}${chgPct}%)\n`;
     msg += `  RSI 직전: <b>${r.rsi}</b> | 현재: <b>${r.curRsi}</b>(기준&lt;${r.curRsiMax}) | BB하단: ${r.bbLower}\n`;
     msg += `  거래량: ${vol}\n`;
     if (r.orderStatus) {
@@ -474,47 +478,70 @@ async function main() {
       const sym = symbols[i];
       try {
         const klines = await getKlines(sym);
-        const r = analyze(sym, klines);
+        const isMajor = CONFIG.MAJOR_SYMBOLS.includes(sym);
+        const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR : CONFIG.RSI_THRESHOLD;
+        const r = analyze(sym, klines, rsiThreshold);
         if (r) {
           r.vol = volMap[sym] || 0;
+          r.isMajor = isMajor;
 
           try {
             const alreadyIn = await hasOpenPosition(sym, hedgeMode);
             const curCandleTime = klines[klines.length - 1].openTime;
-            const stateEntry = getStateEntry(state, sym);
 
             if (alreadyIn) {
-              if (!stateEntry) {
-                // 스캐너 밖에서 진입한 포지션 (추적 정보 없음)
-                console.log(`  [SKIP] ${sym} 이미 보유중 (추적 없음)`);
+              if (isMajor) {
+                // 메이저 코인은 DCA 없이 스킵
+                console.log(`  [SKIP] ${sym} 이미 보유중 [메이저]`);
                 r.orderStatus = "이미 보유중";
-              } else if (stateEntry.candleTime === curCandleTime) {
-                // 같은 1시간봉에서 이미 진입됨 → 스킵
-                console.log(`  [SKIP] ${sym} 동일봉 스킵`);
-                r.orderStatus = "이미 보유중 (동일봉)";
-              } else if (stateEntry.totalInvested >= CONFIG.MAX_INVESTED) {
-                // 최대 투자금액 도달
-                console.log(`  [SKIP] ${sym} 최대매수 도달 ($${CONFIG.MAX_INVESTED})`);
-                r.orderStatus = `최대매수 도달 ($${CONFIG.MAX_INVESTED})`;
               } else {
-                // 새 봉 + 추가매수 가능 → DCA
-                const addAmount = Math.min(CONFIG.ORDER_USDT_ADD, CONFIG.MAX_INVESTED - stateEntry.totalInvested);
-                let order, usedLeverage = CONFIG.LEVERAGE;
-                try {
-                  order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
-                } catch (e1) {
-                  console.log(`  [RETRY] ${sym} DCA ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
-                  usedLeverage = CONFIG.LEVERAGE_FALLBACK;
-                  await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
-                  order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                const stateEntry = getStateEntry(state, sym);
+                if (!stateEntry) {
+                  console.log(`  [SKIP] ${sym} 이미 보유중 (추적 없음)`);
+                  r.orderStatus = "이미 보유중";
+                } else if (stateEntry.candleTime === curCandleTime) {
+                  console.log(`  [SKIP] ${sym} 동일봉 스킵`);
+                  r.orderStatus = "이미 보유중 (동일봉)";
+                } else if (stateEntry.totalInvested >= CONFIG.MAX_INVESTED) {
+                  console.log(`  [SKIP] ${sym} 최대매수 도달 ($${CONFIG.MAX_INVESTED})`);
+                  r.orderStatus = `최대매수 도달 ($${CONFIG.MAX_INVESTED})`;
+                } else {
+                  // DCA
+                  const addAmount = Math.min(CONFIG.ORDER_USDT_ADD, CONFIG.MAX_INVESTED - stateEntry.totalInvested);
+                  let order, usedLeverage = CONFIG.LEVERAGE;
+                  try {
+                    order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                  } catch (e1) {
+                    console.log(`  [RETRY] ${sym} DCA ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
+                    usedLeverage = CONFIG.LEVERAGE_FALLBACK;
+                    await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
+                    order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                  }
+                  const newInvested = stateEntry.totalInvested + addAmount;
+                  updateState(state, sym, curCandleTime, newInvested);
+                  saveState(state);
+                  console.log(`  [DCA] ${sym} +$${addAmount} 추가 (총 $${newInvested}) orderId: ${order.orderId} qty: ${order.origQty}`);
+                  r.orderStatus = `DCA +$${addAmount} | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
                 }
-                const newInvested = stateEntry.totalInvested + addAmount;
-                updateState(state, sym, curCandleTime, newInvested);
-                saveState(state);
-                console.log(`  [DCA] ${sym} +$${addAmount} 추가 (총 $${newInvested}) orderId: ${order.orderId} qty: ${order.origQty}`);
-                r.orderStatus = `DCA +$${addAmount} | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
               }
+            } else if (isMajor) {
+              // 메이저 코인 신규 매수: Cross 50x $10,000
+              let order, usedLeverage = CONFIG.LEVERAGE_MAJOR;
+              try {
+                await setMarginType(sym, "CROSSED");
+                await setLeverage(sym, CONFIG.LEVERAGE_MAJOR);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+              } catch (e1) {
+                console.log(`  [RETRY] ${sym} [메이저] ${CONFIG.LEVERAGE_MAJOR}x 실패 → ${CONFIG.LEVERAGE_MAJOR_FALLBACK}x 재시도`);
+                usedLeverage = CONFIG.LEVERAGE_MAJOR_FALLBACK;
+                await setMarginType(sym, "CROSSED");
+                await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+              }
+              console.log(`  [BUY] ${sym} [메이저] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
+              r.orderStatus = `매수 완료 [메이저] | qty: ${order.origQty} | ${usedLeverage}x`;
             } else {
+              // 알트 신규 매수: Isolated 20x $1,000
               let order, usedLeverage = CONFIG.LEVERAGE;
               try {
                 await setMarginType(sym);

@@ -10,15 +10,17 @@ const path   = require("path");
 const VERSION = "floorScanerTester v2";
 
 const CONFIG = {
-  BASE_URL:        "https://fapi.binance.com",
-  INTERVAL:        "1h",
-  CANDLE_LIMIT:    150,
-  MIN_VOLUME_USDT: 1_000_000,
-  REQUEST_DELAY:   120,
-  RSI_PERIOD:      14,
-  RSI_THRESHOLD:   35,
+  BASE_URL:           "https://fapi.binance.com",
+  INTERVAL:           "1h",
+  CANDLE_LIMIT:       150,
+  MIN_VOLUME_USDT:    1_000_000,
+  REQUEST_DELAY:      120,
+  RSI_PERIOD:         14,
+  RSI_THRESHOLD:      35,
+  RSI_THRESHOLD_MAJOR: 40,
+  MAJOR_SYMBOLS:      ["BTCUSDT", "ETHUSDT", "SOLUSDT", "HYPEUSDT"],
 
-  LOG_FILE:        path.join(__dirname, "floor_v2_log.txt"),
+  LOG_FILE:           path.join(__dirname, "floor_v2_log.txt"),
 };
 
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -118,7 +120,7 @@ async function getKlines(symbol) {
 }
 
 // ─── 분석 (조건별 결과 반환) ───────────────────────────────────────────────────
-function analyzeWithLog(symbol, klines) {
+function analyzeWithLog(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD) {
   if (klines.length < CONFIG.CANDLE_LIMIT) return { pass: false, reason: "캔들 부족" };
 
   const closes  = klines.map(k => k.close);
@@ -139,8 +141,8 @@ function analyzeWithLog(symbol, klines) {
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null)
     return { pass: false, reason: "RSI 계산 불가" };
-  if (rsi >= CONFIG.RSI_THRESHOLD)
-    return { pass: false, reason: `RSI ${rsi.toFixed(1)} (기준 ${CONFIG.RSI_THRESHOLD} 초과)` };
+  if (rsi >= rsiThreshold)
+    return { pass: false, reason: `RSI ${rsi.toFixed(1)} (기준 ${rsiThreshold} 초과)` };
 
   // 4. 현재봉 RSI 보정: 경과 시간에 따라 임계값 상향 (5분→36, 15분→37, ...)
   const elapsedMin = (Date.now() - cur.openTime) / 60_000;
@@ -192,12 +194,15 @@ async function main() {
       const sym = symbols[i];
       try {
         const klines = await getKlines(sym);
-        const result = analyzeWithLog(sym, klines);
+        const isMajor = CONFIG.MAJOR_SYMBOLS.includes(sym);
+        const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR : CONFIG.RSI_THRESHOLD;
+        const result = analyzeWithLog(sym, klines, rsiThreshold);
 
         if (result.pass) {
           counter["통과"]++;
-          passed.push({ symbol: sym, ...result, vol: volMap[sym], price: priceMap[sym] });
-          log(`✅ ${sym.padEnd(12)} 통과! RSI직전:${result.rsi} RSI현재:${result.curRsi}(기준<${result.curRsiMax}) BB:${result.bbLower}`);
+          passed.push({ symbol: sym, ...result, vol: volMap[sym], price: priceMap[sym], isMajor });
+          const tag = isMajor ? " [메이저]" : "";
+          log(`✅ ${sym.padEnd(12)} 통과!${tag} RSI직전:${result.rsi} RSI현재:${result.curRsi}(기준<${result.curRsiMax}) BB:${result.bbLower}`);
         } else {
           // 탈락 이유 첫 단어로 카운터 분류
           const key = Object.keys(counter).find(k => result.reason.includes(k));
