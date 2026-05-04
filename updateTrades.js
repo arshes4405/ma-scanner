@@ -93,15 +93,23 @@ async function main() {
     fs.writeFileSync(CONFIG.LOG_FILE, NEW_HEADER + "\n", "utf8");
   }
 
-  // REALIZED_PNL 조회 (KST 기준 어제 00:00 ~ 지금)
+  // REALIZED_PNL 조회 (페이지네이션)
   const { startTime, endTime } = recentRangeKST();
   const fromDate = new Date(startTime + 9 * 3600 * 1000).toISOString().slice(0, 10);
   const toDate   = new Date(endTime   + 9 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
   console.log(`조회 범위: ${fromDate} 00:00 ~ ${toDate} (KST)`);
-  const qs = `incomeType=REALIZED_PNL&startTime=${startTime}&endTime=${endTime}&limit=1000&timestamp=${Date.now()}`;
-  const income = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v1/income?${qs}&signature=${sign(qs)}`);
 
-  const filtered = income.filter(item =>
+  let allIncome = [];
+  let cursor = startTime;
+  while (true) {
+    const qs = `incomeType=REALIZED_PNL&startTime=${cursor}&endTime=${endTime}&limit=1000&timestamp=${Date.now()}`;
+    const page = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v1/income?${qs}&signature=${sign(qs)}`);
+    allIncome = allIncome.concat(page);
+    if (page.length < 1000) break;
+    cursor = page[page.length - 1].time + 1;
+  }
+
+  const filtered = allIncome.filter(item =>
     !CONFIG.EXCLUDE_SYMBOLS.includes(item.symbol) &&
     !existingTranIds.has(String(item.tranId))
   );
