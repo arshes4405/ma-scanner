@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-04 v32";
+const VERSION = "2026-05-04 v33";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -28,6 +28,8 @@ const CONFIG = {
   ORDER_USDT_TIER1:    2000,
   ORDER_USDT_ADD:      100,
   MAX_INVESTED:        1500,
+  MAX_INVESTED_TIER2:  2250,
+  MAX_INVESTED_TIER1:  3000,
   LEVERAGE:            20,
   LEVERAGE_FALLBACK:   10,
   ORDER_USDT_MAJOR:    10000,
@@ -541,16 +543,20 @@ async function main() {
                 } else if (stateEntry.candleTime === curCandleTime) {
                   console.log(`  [SKIP] ${sym} 동일봉 스킵`);
                   r.orderStatus = "이미 보유중 (동일봉)";
-                } else if (stateEntry.totalInvested >= CONFIG.MAX_INVESTED) {
-                  console.log(`  [SKIP] ${sym} 최대매수 도달 ($${CONFIG.MAX_INVESTED})`);
-                  r.orderStatus = `최대매수 도달 ($${CONFIG.MAX_INVESTED})`;
                 } else {
-                  // DCA (티어별 초기매수의 10%)
+                  // DCA (티어별 초기매수의 10%, 최대한도 티어별)
                   const dcaBase = isTier1 ? CONFIG.ORDER_USDT_TIER1
                                 : isTier2 ? CONFIG.ORDER_USDT_TIER2
                                 : CONFIG.ORDER_USDT;
+                  const maxInvested = isTier1 ? CONFIG.MAX_INVESTED_TIER1
+                                   : isTier2 ? CONFIG.MAX_INVESTED_TIER2
+                                   : CONFIG.MAX_INVESTED;
+                  if (stateEntry.totalInvested >= maxInvested) {
+                    console.log(`  [SKIP] ${sym} 최대매수 도달 ($${maxInvested})`);
+                    r.orderStatus = `최대매수 도달 ($${maxInvested})`;
+                  } else {
                   const dcaUnit = Math.round(dcaBase * 0.1);
-                  const addAmount = Math.min(dcaUnit, CONFIG.MAX_INVESTED - stateEntry.totalInvested);
+                  const addAmount = Math.min(dcaUnit, maxInvested - stateEntry.totalInvested);
                   let order, usedLeverage = CONFIG.LEVERAGE;
                   try {
                     order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
@@ -565,6 +571,7 @@ async function main() {
                   saveState(state);
                   console.log(`  [DCA] ${sym} +$${addAmount} 추가 (총 $${newInvested}) orderId: ${order.orderId} qty: ${order.origQty}`);
                   r.orderStatus = `DCA +$${addAmount} | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
+                  }
                 }
               }
             } else if (isMajor) {
