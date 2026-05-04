@@ -84,10 +84,15 @@ async function main() {
       console.log("헤더 업그레이드 완료");
     }
 
-    // 중복 방지용 order_id 수집 (idx9)
+    // 중복 방지용 order_id 수집 (idx9) — MANUAL은 SYMBOL_SEC 키로 저장됨
     for (const line of lines.slice(1)) {
       const c = line.split(",");
       if (c[9]) existingTranIds.add(c[9].trim());
+    }
+    // MANUAL 항목의 시각+심볼 → SEC 키도 추가 (tranId 단위 dedup 보완)
+    for (const line of lines.slice(1)) {
+      const c = line.split(",");
+      if (c[8]?.trim() === "MANUAL" && c[9]?.includes("_")) existingTranIds.add(c[9].trim());
     }
   } else {
     fs.writeFileSync(CONFIG.LOG_FILE, NEW_HEADER + "\n", "utf8");
@@ -109,27 +114,32 @@ async function main() {
     cursor = page[page.length - 1].time + 1;
   }
 
-  const filtered = allIncome.filter(item =>
-    !CONFIG.EXCLUDE_SYMBOLS.includes(item.symbol) &&
-    !existingTranIds.has(String(item.tranId))
-  );
+  // 같은 심볼 + 같은 초 = 하나의 청산 이벤트로 묶기 (key: SYMBOL_SEC)
+  const grouped = {};
+  for (const item of allIncome) {
+    if (CONFIG.EXCLUDE_SYMBOLS.includes(item.symbol)) continue;
+    const sec = Math.floor(item.time / 1000);
+    const key = `${item.symbol}_${sec}`;
+    if (existingTranIds.has(key)) continue;          // 이미 처리된 이벤트
+    if (!grouped[key]) grouped[key] = { symbol: item.symbol, time: item.time, pnl: 0, key };
+    grouped[key].pnl += parseFloat(item.income);
+  }
 
-  if (!filtered.length) {
+  if (!Object.keys(grouped).length) {
     console.log("추가할 새 내역 없음");
     return;
   }
 
-  // 건별 1행씩 기록
   let appendCount = 0;
   let appendLines = "";
   let totalPnl = 0, wins = 0;
 
-  for (const item of filtered) {
-    const pnl     = parseFloat(item.income);
+  for (const g of Object.values(grouped)) {
+    const pnl     = g.pnl;
     const action  = pnl >= 0 ? "AUTO_CLOSE" : "AUTO_SL";
     const pnlUsdt = pnl.toFixed(4);
-    const datetime = fmtDatetime(item.time);
-    appendLines += `${datetime},${item.symbol},${action},,,,,${pnlUsdt},MANUAL,${item.tranId}\n`;
+    const datetime = fmtDatetime(g.time);
+    appendLines += `${datetime},${g.symbol},${action},,,,,${pnlUsdt},MANUAL,${g.key}\n`;
     totalPnl += pnl;
     if (pnl >= 0) wins++;
     appendCount++;
