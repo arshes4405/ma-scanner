@@ -8,7 +8,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v2";
+const VERSION = "2026-05-04 v3";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -18,7 +18,8 @@ const CONFIG = {
   BASE_URL:           "https://fapi.binance.com",
   SL_PCT:             3,
   TP_PCT:             5,
-  MAX_MARGIN_USDT:    2000,
+  MAX_NOTIONAL_USDT:  2000,
+  MAJOR_SYMBOLS:      ["ETHUSDT", "HYPEUSDT"],
   MAX_POSITIONS:      55,
   TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
   TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
@@ -164,8 +165,8 @@ async function checkAndClosePositions(hedgeMode) {
     ? pRisk.filter(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
     : pRisk.filter(p => parseFloat(p.positionAmt) > 0)
   ).filter(p => {
-    const margin = Math.abs(parseFloat(p.notional)) / parseFloat(p.leverage);
-    return margin < CONFIG.MAX_MARGIN_USDT;
+    if (CONFIG.MAJOR_SYMBOLS.includes(p.symbol)) return true;
+    return Math.abs(parseFloat(p.notional)) < CONFIG.MAX_NOTIONAL_USDT;
   });
 
   const tpState = loadTpState();
