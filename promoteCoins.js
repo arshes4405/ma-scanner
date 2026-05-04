@@ -50,7 +50,7 @@ function main() {
     if (!sym || !action) continue;
     if (!stats[sym]) stats[sym] = { tp: 0, sl: 0 };
     if (action === "TP_HALF") stats[sym].tp++;
-    else if (action === "SL" || action === "BE_CLOSE") stats[sym].sl++;
+    else if (action === "SL") stats[sym].sl++;
   }
 
   // 익절 - 손절 > 1 → 3군 후보
@@ -60,7 +60,7 @@ function main() {
     .sort((a, b) => b.net - a.net);
 
   console.log(`\n[promoteCoins] trade_log.csv 분석 완료`);
-  console.log(`총 ${Object.keys(stats).length}개 거래 종목, 익절 있는 종목: ${candidates.length}개\n`);
+  console.log(`TP_HALF/SL 기준 | 총 ${Object.keys(stats).length}개 종목, 3군 승격 대상: ${candidates.length}개\n`);
   console.log(`${"─".repeat(58)}`);
   console.log(` ${"심볼".padEnd(14)} ${"거래".padStart(4)} ${"익절".padStart(4)} ${"손절".padStart(4)} ${"순익절".padStart(5)} ${"승률".padStart(6)}`);
   console.log(`${"─".repeat(58)}`);
