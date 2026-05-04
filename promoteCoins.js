@@ -55,7 +55,7 @@ function main() {
 
   // 익절 - 손절 > 1 → 3군 후보
   const candidates = Object.entries(stats)
-    .filter(([, s]) => s.tp - s.sl > 1)
+    .filter(([, s]) => s.tp - s.sl >= 1)
     .map(([sym, s]) => ({ sym, ...s, total: s.tp + s.sl, net: s.tp - s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
     .sort((a, b) => b.net - a.net);
 
