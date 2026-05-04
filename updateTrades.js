@@ -33,12 +33,12 @@ function httpGetAuth(url) {
   });
 }
 
-function dayRangeKST(daysAgo = 1) {
+function recentRangeKST() {
   const kstOffset = 9 * 60 * 60 * 1000;
   const kstNow    = new Date(Date.now() + kstOffset);
   const todayMidnight = Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()) - kstOffset;
-  const startTime = todayMidnight - daysAgo * 86400000;
-  const endTime   = todayMidnight - (daysAgo - 1) * 86400000 - 1;
+  const startTime = todayMidnight - 86400000; // 어제 00:00 KST
+  const endTime   = Date.now();               // 지금
   return { startTime, endTime };
 }
 
@@ -93,10 +93,11 @@ async function main() {
     fs.writeFileSync(CONFIG.LOG_FILE, NEW_HEADER + "\n", "utf8");
   }
 
-  // 전날 REALIZED_PNL 내역 조회 (KST 기준 어제 00:00 ~ 23:59)
-  const { startTime, endTime } = dayRangeKST(1);
-  const targetDate = new Date(startTime + 9 * 3600 * 1000).toISOString().slice(0, 10);
-  console.log(`대상 날짜: ${targetDate} (KST)`);
+  // REALIZED_PNL 조회 (KST 기준 어제 00:00 ~ 지금)
+  const { startTime, endTime } = recentRangeKST();
+  const fromDate = new Date(startTime + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const toDate   = new Date(endTime   + 9 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
+  console.log(`조회 범위: ${fromDate} 00:00 ~ ${toDate} (KST)`);
   const qs = `incomeType=REALIZED_PNL&startTime=${startTime}&endTime=${endTime}&limit=1000&timestamp=${Date.now()}`;
   const income = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v1/income?${qs}&signature=${sign(qs)}`);
 
