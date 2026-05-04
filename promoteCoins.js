@@ -4,7 +4,7 @@
  * 실행: node promoteCoins.js
  */
 
-const VERSION = "2026-05-04 v4";
+const VERSION = "2026-05-05 v5";
 
 const fs   = require("fs");
 const path = require("path");
@@ -89,11 +89,13 @@ function main() {
     .map(([sym, s]) => ({ sym, ...s, net: s.tp - s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
     .sort((a, b) => b.net - a.net);
 
+  const warningList = [];
   for (const r of allRows) {
     if      (r.net >= 5)  tierMap.TIER1.push(r);
     else if (r.net >= 3)  tierMap.TIER2.push(r);
     else if (r.net >= 1)  tierMap.TIER3.push(r);
     else if (r.net <= -2) blackList.push(r);
+    else if (r.sl > 0)    warningList.push(r);
   }
 
   // 결과 출력
@@ -113,6 +115,17 @@ function main() {
       for (const r of rows)
         console.log(`  ${r.sym.padEnd(14)} ${String(r.tp).padStart(4)} ${String(r.sl).padStart(4)} ${("+" + r.net).padStart(5)} ${(r.winRate + "%").padStart(6)}`);
     }
+    console.log();
+  }
+
+  // 언랭 SL 기록
+  if (warningList.length) {
+    console.log(`▶ 언랭 SL 기록 (순익절 < 1) : ${warningList.length}개`);
+    console.log(`  ${"─".repeat(56)}`);
+    console.log(`  ${"심볼".padEnd(14)} ${"익절".padStart(4)} ${"손절".padStart(4)} ${"순익절".padStart(5)} ${"승률".padStart(6)}`);
+    console.log(`  ${"─".repeat(56)}`);
+    for (const r of warningList)
+      console.log(`  ${r.sym.padEnd(14)} ${String(r.tp).padStart(4)} ${String(r.sl).padStart(4)} ${String(r.net).padStart(5)} ${((r.tp + r.sl) > 0 ? r.winRate + "%" : "-").padStart(6)}`);
     console.log();
   }
 
