@@ -53,21 +53,21 @@ function main() {
     else if (action === "SL" || action === "BE_CLOSE") stats[sym].sl++;
   }
 
-  // TP_HALF 1회 이상 → 3군 후보
+  // 익절 - 손절 > 1 → 3군 후보
   const candidates = Object.entries(stats)
-    .filter(([, s]) => s.tp > 0)
-    .map(([sym, s]) => ({ sym, ...s, total: s.tp + s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
-    .sort((a, b) => b.tp - a.tp);
+    .filter(([, s]) => s.tp - s.sl > 1)
+    .map(([sym, s]) => ({ sym, ...s, total: s.tp + s.sl, net: s.tp - s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
+    .sort((a, b) => b.net - a.net);
 
   console.log(`\n[promoteCoins] trade_log.csv 분석 완료`);
   console.log(`총 ${Object.keys(stats).length}개 거래 종목, 익절 있는 종목: ${candidates.length}개\n`);
-  console.log(`${"─".repeat(52)}`);
-  console.log(` ${"심볼".padEnd(14)} ${"거래".padStart(4)} ${"익절".padStart(4)} ${"손절".padStart(4)} ${"승률".padStart(6)}`);
-  console.log(`${"─".repeat(52)}`);
+  console.log(`${"─".repeat(58)}`);
+  console.log(` ${"심볼".padEnd(14)} ${"거래".padStart(4)} ${"익절".padStart(4)} ${"손절".padStart(4)} ${"순익절".padStart(5)} ${"승률".padStart(6)}`);
+  console.log(`${"─".repeat(58)}`);
   for (const r of candidates) {
-    console.log(` ${r.sym.padEnd(14)} ${String(r.total).padStart(4)} ${String(r.tp).padStart(4)} ${String(r.sl).padStart(4)} ${(r.winRate + "%").padStart(6)}`);
+    console.log(` ${r.sym.padEnd(14)} ${String(r.total).padStart(4)} ${String(r.tp).padStart(4)} ${String(r.sl).padStart(4)} ${("+" + r.net).padStart(5)} ${(r.winRate + "%").padStart(6)}`);
   }
-  console.log(`${"─".repeat(52)}\n`);
+  console.log(`${"─".repeat(58)}\n`);
 
   const newTier3 = candidates.map(r => r.sym);
   const currentTier3 = readCurrentTier3();
