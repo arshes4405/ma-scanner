@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-04 v31";
+const VERSION = "2026-05-04 v32";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -545,8 +545,12 @@ async function main() {
                   console.log(`  [SKIP] ${sym} 최대매수 도달 ($${CONFIG.MAX_INVESTED})`);
                   r.orderStatus = `최대매수 도달 ($${CONFIG.MAX_INVESTED})`;
                 } else {
-                  // DCA
-                  const addAmount = Math.min(CONFIG.ORDER_USDT_ADD, CONFIG.MAX_INVESTED - stateEntry.totalInvested);
+                  // DCA (티어별 초기매수의 10%)
+                  const dcaBase = isTier1 ? CONFIG.ORDER_USDT_TIER1
+                                : isTier2 ? CONFIG.ORDER_USDT_TIER2
+                                : CONFIG.ORDER_USDT;
+                  const dcaUnit = Math.round(dcaBase * 0.1);
+                  const addAmount = Math.min(dcaUnit, CONFIG.MAX_INVESTED - stateEntry.totalInvested);
                   let order, usedLeverage = CONFIG.LEVERAGE;
                   try {
                     order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
