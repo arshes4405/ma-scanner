@@ -8,7 +8,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v1";
+const VERSION = "2026-05-03 v2";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -19,6 +19,7 @@ const CONFIG = {
   SL_PCT:             3,
   TP_PCT:             5,
   MAX_MARGIN_USDT:    2000,
+  MAX_POSITIONS:      50,
   TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
   TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
 };
@@ -182,6 +183,42 @@ async function checkAndClosePositions(hedgeMode) {
 
   // 보유 중인 심볼의 stepSize만 조회
   const stepSizes = await getSymbolStepSizes([...activeSymbols]);
+
+  // 포지션 50개 초과 시 수익률 높은 순으로 초과분 청산
+  if (positions.length > CONFIG.MAX_POSITIONS) {
+    const excess = positions.length - CONFIG.MAX_POSITIONS;
+    const byPnl  = [...positions].sort((a, b) => {
+      const pA = ((parseFloat(a.markPrice) - parseFloat(a.entryPrice)) / parseFloat(a.entryPrice)) * 100;
+      const pB = ((parseFloat(b.markPrice) - parseFloat(b.entryPrice)) / parseFloat(b.entryPrice)) * 100;
+      return pB - pA;
+    });
+    const toClose = byPnl.slice(0, excess);
+    console.log(`  [MAX_POS] 포지션 ${positions.length}개 > ${CONFIG.MAX_POSITIONS}개 → 수익률 상위 ${excess}개 청산`);
+    for (const pos of toClose) {
+      const sym     = pos.symbol;
+      const qty     = Math.abs(parseFloat(pos.positionAmt));
+      const entry   = parseFloat(pos.entryPrice);
+      const mark    = parseFloat(pos.markPrice);
+      const pnlPct  = ((mark - entry) / entry) * 100;
+      const posSide = hedgeMode ? "&positionSide=LONG" : "";
+      try {
+        const sellQs = `symbol=${sym}&side=SELL${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+        const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
+        logTrade("MAX_POS_CLOSE", sym, entry, mark, qty, +pnlPct.toFixed(2), +(qty * (mark - entry)).toFixed(4), order.orderId);
+        console.log(`  [MAX_POS] ${sym} 청산 완료 (${pnlPct.toFixed(2)}%) orderId: ${order.orderId}`);
+        await sendTelegram(
+          `📊 <b>포지션 수 초과 청산</b>\n` +
+          `<b>${sym}</b>  진입: $${entry} → 현재: $${mark}\n` +
+          `  수익률: ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% | orderId: ${order.orderId}`
+        );
+      } catch (e) {
+        console.error(`  [MAX_POS] ${sym} 청산 실패:`, e.message);
+      }
+    }
+    // 청산된 심볼 positions에서 제거 (이후 SL/TP 체크 스킵)
+    const closedSyms = new Set(toClose.map(p => p.symbol));
+    positions.splice(0, positions.length, ...positions.filter(p => !closedSyms.has(p.symbol)));
+  }
 
   for (const pos of positions) {
     const sym       = pos.symbol;
