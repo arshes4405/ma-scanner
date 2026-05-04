@@ -21,7 +21,7 @@ const CONFIG = {
   MAX_NOTIONAL_USDT:  2000,
   MAJOR_SYMBOLS:      ["ETHUSDT", "HYPEUSDT"],
   MAX_POSITIONS:      55,
-  PROTECT_SYMBOLS:    ["ETHUSDT", "CLOUSDT"],  // 자동매도 방지 (SL/TP/MAX_POS 전부 스킵)
+  PROTECT_SYMBOLS:    ["ETHUSDT", "CLUSDT"],  // 자동매도 방지 (SL/TP/MAX_POS 전부 스킵)
   TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
   TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
 };
