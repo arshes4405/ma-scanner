@@ -4,7 +4,7 @@
  * 실행: node promoteCoins.js
  */
 
-const VERSION = "2026-05-05 v5";
+const VERSION = "2026-05-05 v6";
 
 const fs   = require("fs");
 const path = require("path");
@@ -68,18 +68,32 @@ function main() {
     process.exit(1);
   }
 
-  // 심볼별 TP/SL 집계 (source=SYSTEM + TP_HALF/SL 만)
+  // 1차: SYSTEM source (TP_HALF / SL)
   const stats = {};
+  const systemSlSymbols = new Set();
   for (const line of lines.slice(1)) {
     const cols   = line.split(",");
     const sym    = cols[colSymbol]?.trim();
     const action = cols[colAction]?.trim();
     const source = colSource !== -1 ? cols[colSource]?.trim() : null;
     if (!sym || !action) continue;
-    if (source !== null && source !== "SYSTEM") continue;
+    if (source !== "SYSTEM") continue;
     if (!stats[sym]) stats[sym] = { tp: 0, sl: 0 };
     if (action === "TP_HALF") stats[sym].tp++;
-    else if (action === "SL") stats[sym].sl++;
+    else if (action === "SL") { stats[sym].sl++; systemSlSymbols.add(sym); }
+  }
+
+  // 2차: MANUAL AUTO_SL — SYSTEM SL 없는 심볼만 (강제청산 등 모니터 미포착 건)
+  for (const line of lines.slice(1)) {
+    const cols   = line.split(",");
+    const sym    = cols[colSymbol]?.trim();
+    const action = cols[colAction]?.trim();
+    const source = colSource !== -1 ? cols[colSource]?.trim() : null;
+    if (!sym || !action) continue;
+    if (source !== "MANUAL" || action !== "AUTO_SL") continue;
+    if (systemSlSymbols.has(sym)) continue;
+    if (!stats[sym]) stats[sym] = { tp: 0, sl: 0 };
+    stats[sym].sl++;
   }
 
   // 티어별 분류 (상위 티어 우선)
