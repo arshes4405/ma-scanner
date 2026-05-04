@@ -45,29 +45,34 @@ async function main() {
   let totalPnl = 0;
   let totalWin = 0, totalLose = 0;
 
-  console.log(`\n${"─".repeat(70)}`);
-  console.log(` ${"심볼".padEnd(14)} ${"진입가".padStart(12)} ${"현재가".padStart(12)} ${"수익률".padStart(8)} ${"미실현손익".padStart(12)}`);
-  console.log(`${"─".repeat(70)}`);
+  console.log(`\n${"─".repeat(82)}`);
+  console.log(` ${"심볼".padEnd(14)} ${"매수금".padStart(8)} ${"진입가".padStart(12)} ${"현재가".padStart(12)} ${"수익률".padStart(8)} ${"미실현손익".padStart(12)}`);
+  console.log(`${"─".repeat(82)}`);
 
+  let totalBought = 0;
   for (const p of positions) {
-    const entry  = parseFloat(p.entryPrice);
-    const mark   = parseFloat(p.markPrice);
-    const pnl    = parseFloat(p.unRealizedProfit);
-    const pnlPct = ((mark - entry) / entry * 100);
+    const entry   = parseFloat(p.entryPrice);
+    const mark    = parseFloat(p.markPrice);
+    const qty     = Math.abs(parseFloat(p.positionAmt));
+    const pnl     = parseFloat(p.unRealizedProfit);
+    const pnlPct  = ((mark - entry) / entry * 100);
+    const bought  = Math.round(qty * entry);
 
-    totalPnl += pnl;
+    totalPnl    += pnl;
+    totalBought += bought;
     if (pnl >= 0) totalWin++; else totalLose++;
 
-    const pnlStr = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
-    const pctStr = `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`;
+    const pnlStr    = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
+    const pctStr    = `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`;
+    const boughtStr = `$${bought}`;
 
-    console.log(` ${p.symbol.padEnd(14)} ${entry.toPrecision(6).padStart(12)} ${mark.toPrecision(6).padStart(12)} ${pctStr.padStart(8)} ${pnlStr.padStart(12)} USDT`);
+    console.log(` ${p.symbol.padEnd(14)} ${boughtStr.padStart(8)} ${entry.toPrecision(6).padStart(12)} ${mark.toPrecision(6).padStart(12)} ${pctStr.padStart(8)} ${pnlStr.padStart(12)} USDT`);
   }
 
-  console.log(`${"─".repeat(70)}`);
-  console.log(` 총 ${positions.length}개  수익 ${totalWin}개  손실 ${totalLose}개`);
+  console.log(`${"─".repeat(82)}`);
+  console.log(` 총 ${positions.length}개  수익 ${totalWin}개  손실 ${totalLose}개  총매수금: $${totalBought.toLocaleString()}`);
   console.log(` 미실현 총손익: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USDT`);
-  console.log(`${"─".repeat(70)}\n`);
+  console.log(`${"─".repeat(82)}\n`);
 }
 
 main().catch(e => console.error("에러:", e.message));
