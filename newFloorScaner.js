@@ -37,7 +37,7 @@ const CONFIG = {
     "STXUSDT", "MANAUSDT", "COMPUSDT", "HBARUSDT", "WOOUSDT", "ICPUSDT", "ACHUSDT", "TUSDT",
     "DUSKUSDT", "IOSTUSDT", "FLOWUSDT", "FETUSDT", "HIGHUSDT", "BELUSDT", "GTCUSDT",
   ],
-  MAJOR_SYMBOLS:      ["BTCUSDT", "ETHUSDT", "SOLUSDT", "HYPEUSDT"],
+  MAJOR_SYMBOLS:      ["ETHUSDT", "HYPEUSDT"],
   SL_PCT:             3,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };
