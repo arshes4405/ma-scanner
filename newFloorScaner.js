@@ -619,7 +619,7 @@ async function main() {
 
   } catch (e) {
     console.error("에러:", e.message);
-    await sendTelegram(`❌ 바닥 스캐너 오류: ${e.message}`);
+    await sendTelegram(`❌ 스캐너 오류 [${VERSION}]: ${e.message}`);
   }
 
   process.exit(0);
