@@ -1,28 +1,33 @@
 /**
- * trade_log.csv 분석 → TP_HALF 기록 있는 종목을 TIER3_SYMBOLS에 자동 반영
+ * trade_log.csv 분석 → 순익절 기준 자동 티어 승격
+ * TIER1: tp-sl >= 5 | TIER2: tp-sl >= 3 | TIER3: tp-sl >= 1
  * 실행: node promoteCoins.js
  */
 
 const fs   = require("fs");
 const path = require("path");
 
-const CSV_FILE    = path.join(__dirname, "trade_log.csv");
+const CSV_FILE     = path.join(__dirname, "trade_log.csv");
 const SCANNER_FILE = path.join(__dirname, "newFloorScaner.js");
 
-function readCurrentTier3() {
+const TIER_RULES = [
+  { key: "TIER1", label: "1군", min: 5 },
+  { key: "TIER2", label: "2군", min: 3 },
+  { key: "TIER3", label: "3군", min: 1 },
+];
+
+function readTier(key) {
   const src = fs.readFileSync(SCANNER_FILE, "utf8");
-  const m = src.match(/TIER3_SYMBOLS:\s*\[([^\]]*)\]/);
+  const m = src.match(new RegExp(`${key}_SYMBOLS:\\s*\\[([^\\]]*)\\]`));
   if (!m) return [];
   return m[1].match(/"([^"]+)"/g)?.map(s => s.replace(/"/g, "")) || [];
 }
 
-function updateTier3(symbols) {
-  const src = fs.readFileSync(SCANNER_FILE, "utf8");
-  const arr = symbols.length
-    ? `["${symbols.join('", "')}"]`
-    : `[]`;
-  const updated = src.replace(/TIER3_SYMBOLS:\s*\[[^\]]*\]/, `TIER3_SYMBOLS:  ${arr}`);
-  fs.writeFileSync(SCANNER_FILE, updated, "utf8");
+function writeTier(key, symbols) {
+  let src = fs.readFileSync(SCANNER_FILE, "utf8");
+  const arr = symbols.length ? `["${symbols.join('", "')}"]` : `[]`;
+  src = src.replace(new RegExp(`${key}_SYMBOLS:\\s*\\[[^\\]]*\\]`), `${key}_SYMBOLS:  ${arr}`);
+  fs.writeFileSync(SCANNER_FILE, src, "utf8");
 }
 
 function main() {
@@ -41,10 +46,10 @@ function main() {
     process.exit(1);
   }
 
-  // 심볼별 TP/SL 집계
+  // 심볼별 TP/SL 집계 (TP_HALF / SL 만)
   const stats = {};
   for (const line of lines.slice(1)) {
-    const cols = line.split(",");
+    const cols   = line.split(",");
     const sym    = cols[colSymbol]?.trim();
     const action = cols[colAction]?.trim();
     if (!sym || !action) continue;
@@ -53,39 +58,57 @@ function main() {
     else if (action === "SL") stats[sym].sl++;
   }
 
-  // 익절 - 손절 > 1 → 3군 후보
-  const candidates = Object.entries(stats)
-    .filter(([, s]) => s.tp - s.sl >= 1)
-    .map(([sym, s]) => ({ sym, ...s, total: s.tp + s.sl, net: s.tp - s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
+  // 티어별 분류 (상위 티어 우선)
+  const tierMap = { TIER1: [], TIER2: [], TIER3: [] };
+  const allRows = Object.entries(stats)
+    .map(([sym, s]) => ({ sym, ...s, net: s.tp - s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
+    .filter(r => r.net >= 1)
     .sort((a, b) => b.net - a.net);
 
-  console.log(`\n[promoteCoins] trade_log.csv 분석 완료`);
-  console.log(`TP_HALF/SL 기준 | 총 ${Object.keys(stats).length}개 종목, 3군 승격 대상: ${candidates.length}개\n`);
-  console.log(`${"─".repeat(58)}`);
-  console.log(` ${"심볼".padEnd(14)} ${"거래".padStart(4)} ${"익절".padStart(4)} ${"손절".padStart(4)} ${"순익절".padStart(5)} ${"승률".padStart(6)}`);
-  console.log(`${"─".repeat(58)}`);
-  for (const r of candidates) {
-    console.log(` ${r.sym.padEnd(14)} ${String(r.total).padStart(4)} ${String(r.tp).padStart(4)} ${String(r.sl).padStart(4)} ${("+" + r.net).padStart(5)} ${(r.winRate + "%").padStart(6)}`);
-  }
-  console.log(`${"─".repeat(58)}\n`);
-
-  const newTier3 = candidates.map(r => r.sym);
-  const currentTier3 = readCurrentTier3();
-
-  const added   = newTier3.filter(s => !currentTier3.includes(s));
-  const removed = currentTier3.filter(s => !newTier3.includes(s));
-
-  if (added.length === 0 && removed.length === 0) {
-    console.log("변경 없음. TIER3 최신 상태입니다.");
-    return;
+  for (const r of allRows) {
+    if      (r.net >= 5) tierMap.TIER1.push(r);
+    else if (r.net >= 3) tierMap.TIER2.push(r);
+    else                 tierMap.TIER3.push(r);
   }
 
-  if (added.length)   console.log(`추가될 종목 (${added.length}개):   ${added.join(", ")}`);
-  if (removed.length) console.log(`제거될 종목 (${removed.length}개): ${removed.join(", ")}`);
+  // 결과 출력
+  console.log(`\n[promoteCoins] trade_log.csv 분석 완료 (TP_HALF/SL 기준)`);
+  console.log(`총 ${Object.keys(stats).length}개 종목\n`);
 
-  updateTier3(newTier3);
-  console.log(`\n✅ newFloorScaner.js TIER3_SYMBOLS 업데이트 완료 (${newTier3.length}개)`);
-  console.log(`   서버 반영: scanupdate\n`);
+  for (const { key, label, min } of TIER_RULES) {
+    const rows = tierMap[key];
+    console.log(`▶ ${label} (순익절 >= ${min}) : ${rows.length}개`);
+    if (rows.length) {
+      console.log(`  ${"─".repeat(56)}`);
+      console.log(`  ${"심볼".padEnd(14)} ${"익절".padStart(4)} ${"손절".padStart(4)} ${"순익절".padStart(5)} ${"승률".padStart(6)}`);
+      console.log(`  ${"─".repeat(56)}`);
+      for (const r of rows)
+        console.log(`  ${r.sym.padEnd(14)} ${String(r.tp).padStart(4)} ${String(r.sl).padStart(4)} ${("+" + r.net).padStart(5)} ${(r.winRate + "%").padStart(6)}`);
+    }
+    console.log();
+  }
+
+  // 파일 업데이트
+  let changed = false;
+  for (const { key, label } of TIER_RULES) {
+    const newList     = tierMap[key].map(r => r.sym);
+    const currentList = readTier(key);
+    const added   = newList.filter(s => !currentList.includes(s));
+    const removed = currentList.filter(s => !newList.includes(s));
+    if (added.length || removed.length) {
+      if (added.length)   console.log(`[${label}] 추가 (${added.length}개): ${added.join(", ")}`);
+      if (removed.length) console.log(`[${label}] 제거 (${removed.length}개): ${removed.join(", ")}`);
+      writeTier(key, newList);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    console.log(`\n✅ newFloorScaner.js 티어 업데이트 완료`);
+    console.log(`   서버 반영: scanupdate\n`);
+  } else {
+    console.log("변경 없음. 티어 최신 상태입니다.");
+  }
 }
 
 main();
