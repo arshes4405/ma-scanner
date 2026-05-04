@@ -4,6 +4,8 @@
  * 실행: node promoteCoins.js
  */
 
+const VERSION = "2026-05-04 v3";
+
 const fs   = require("fs");
 const path = require("path");
 
@@ -92,7 +94,7 @@ function main() {
   }
 
   // 결과 출력
-  console.log(`\n[promoteCoins] trade_log.csv 분석 완료 (TP_HALF/SL 기준)`);
+  console.log(`\n[promoteCoins ${VERSION}] trade_log.csv 분석 완료 (TP_HALF/SL 기준)`);
   if (blackList.length) {
     console.log(`▶ 블랙 (순익절 <= -2) : ${blackList.length}개 → ${blackList.map(r => r.sym).join(", ")}\n`);
   }
