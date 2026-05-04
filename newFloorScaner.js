@@ -33,12 +33,21 @@ const CONFIG = {
   LEVERAGE_MAJOR_FALLBACK: 20,
   RSI_THRESHOLD_MAJOR: 45,
   BB_FROM_LOWER_MAJOR: 0.33,
-  EXCLUDE_SYMBOLS:    [
+  // ── 코인 그룹 ──────────────────────────────────────────────────
+  // 메이저: Cross 50x $10,000 / RSI<45 / BB+33%
+  MAJOR_SYMBOLS:  ["ETHUSDT", "HYPEUSDT"],
+  // 1군: 성적 검증 완료 우량 알트 (향후 채워짐)
+  TIER1_SYMBOLS:  [],
+  // 2군: 일반 알트 기본 조건 (현재 모든 종목 기본값)
+  TIER2_SYMBOLS:  [],
+  // 3군: 성적 양호 → 승격 대기 (향후 채워짐)
+  TIER3_SYMBOLS:  [],
+  // 블랙: 제외 종목
+  EXCLUDE_SYMBOLS: [
     "PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "EVAAUSDT", "ARIAUSDT", "BASEDUSDT",
     "STXUSDT", "MANAUSDT", "COMPUSDT", "HBARUSDT", "WOOUSDT", "ICPUSDT", "ACHUSDT", "TUSDT",
     "DUSKUSDT", "IOSTUSDT", "FLOWUSDT", "FETUSDT", "HIGHUSDT", "BELUSDT", "GTCUSDT",
   ],
-  MAJOR_SYMBOLS:      ["ETHUSDT", "HYPEUSDT"],
   SL_PCT:             3,
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };

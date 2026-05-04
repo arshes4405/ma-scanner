@@ -1,18 +1,16 @@
 const https = require("https");
 
-const VERSION = "2026-05-03 v1";
+const VERSION = "2026-05-03 v2";
 
 const CONFIG = {
   BASE_URL:      "https://fapi.binance.com",
   INTERVAL:      "1h",
-  CANDLE_LIMIT:  720 + 150,
+  MONTHS:        6,
   RSI_PERIOD:    14,
   RSI_THRESHOLD: 35,
-  RSI_CUR_MAX:   38,
+  RSI_CUR_DELTA: 5,   // rsi + 2 + floor(30min/10) = rsi+5 (mid-candle 근사)
   ORDER_USDT:    1000,
-  TP_HALF_PCT:   5,
-  TP_FULL_PCT:   10,
-  BE_CLOSE_PCT:  0.5,
+  TP_PCT:        5,
   SL_PCT:        3,
   MIN_TRADES:    3,   // 최소 거래 수 (통계 신뢰도)
   TOP_N:         20,  // 워스트 출력 개수
@@ -32,6 +30,30 @@ function httpGet(url) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function getKlinesPaged(symbol) {
+  const INDICATOR_CANDLES = 150;
+  const BATCH = 1500;
+  const intervalMs = 60 * 60 * 1000;
+  const totalNeeded = CONFIG.MONTHS * 30 * 24 + INDICATOR_CANDLES;
+  const startTime = Date.now() - totalNeeded * intervalMs;
+
+  const all = [];
+  let from = startTime;
+  while (all.length < totalNeeded) {
+    const url = `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${CONFIG.INTERVAL}&startTime=${from}&limit=${BATCH}`;
+    const raw = await httpGet(url);
+    if (!raw.length) break;
+    all.push(...raw);
+    from = raw[raw.length - 1][0] + intervalMs;
+    if (raw.length < BATCH) break;
+    await sleep(80);
+  }
+  return all.map(k => ({
+    open: parseFloat(k[1]), high: parseFloat(k[2]),
+    low:  parseFloat(k[3]), close: parseFloat(k[4]),
+  }));
+}
 
 function calcRSI(closes, period) {
   if (closes.length < period + 1) return null;
@@ -69,7 +91,7 @@ function checkEntry(klines, i) {
   if (rsi === null || rsi >= CONFIG.RSI_THRESHOLD) return false;
   const curCloses = klines.slice(0, i + 1).map(k => k.close);
   const curRsi = calcRSI(curCloses, CONFIG.RSI_PERIOD);
-  if (curRsi === null || curRsi >= CONFIG.RSI_CUR_MAX) return false;
+  if (curRsi === null || curRsi >= rsi + CONFIG.RSI_CUR_DELTA) return false;
   const prevMid = (prev.high + prev.low) / 2;
   if (cur.close > prevMid) return false;
   const bbLower = calcBollingerLower(prevCloses);
@@ -86,41 +108,23 @@ function simulateSymbol(klines) {
     const k = klines[i];
 
     if (openPos) {
-      const slPrice      = openPos.entry * (1 - CONFIG.SL_PCT      / 100);
-      const tpHalfPrice  = openPos.entry * (1 + CONFIG.TP_HALF_PCT  / 100);
-      const tpFullPrice  = openPos.entry * (1 + CONFIG.TP_FULL_PCT  / 100);
-      const beClosePrice = openPos.entry * (1 + CONFIG.BE_CLOSE_PCT / 100);
+      const slPrice = openPos.entry * (1 - CONFIG.SL_PCT / 100);
+      const tpPrice = openPos.entry * (1 + CONFIG.TP_PCT  / 100);
 
-      if (!openPos.halfDone) {
-        if (k.high >= tpFullPrice) {
-          const pnl = CONFIG.ORDER_USDT * (0.5 * CONFIG.TP_HALF_PCT + 0.5 * CONFIG.TP_FULL_PCT) / 100;
-          trades.push({ action: "TP_FULL", pnl: +pnl.toFixed(2) });
-          openPos = null;
-        } else if (k.low <= slPrice && k.high >= tpHalfPrice) {
-          trades.push({ action: "SL", pnl: +(CONFIG.ORDER_USDT * -CONFIG.SL_PCT / 100).toFixed(2) });
-          openPos = null;
-        } else if (k.low <= slPrice) {
-          trades.push({ action: "SL", pnl: +(CONFIG.ORDER_USDT * -CONFIG.SL_PCT / 100).toFixed(2) });
-          openPos = null;
-        } else if (k.high >= tpHalfPrice) {
-          openPos.halfDone = true;
-          openPos.halfPnl  = CONFIG.ORDER_USDT * 0.5 * CONFIG.TP_HALF_PCT / 100;
-        }
-      } else {
-        if (k.high >= tpFullPrice) {
-          const pnl = openPos.halfPnl + CONFIG.ORDER_USDT * 0.5 * CONFIG.TP_FULL_PCT / 100;
-          trades.push({ action: "TP_FULL", pnl: +pnl.toFixed(2) });
-          openPos = null;
-        } else if (k.low <= beClosePrice) {
-          const pnl = openPos.halfPnl + CONFIG.ORDER_USDT * 0.5 * CONFIG.BE_CLOSE_PCT / 100;
-          trades.push({ action: "BE_CLOSE", pnl: +pnl.toFixed(2) });
-          openPos = null;
-        }
+      if (k.low <= slPrice && k.high >= tpPrice) {
+        trades.push({ action: "SL", pnl: +(CONFIG.ORDER_USDT * -CONFIG.SL_PCT / 100).toFixed(2) });
+        openPos = null;
+      } else if (k.low <= slPrice) {
+        trades.push({ action: "SL", pnl: +(CONFIG.ORDER_USDT * -CONFIG.SL_PCT / 100).toFixed(2) });
+        openPos = null;
+      } else if (k.high >= tpPrice) {
+        trades.push({ action: "TP", pnl: +(CONFIG.ORDER_USDT * CONFIG.TP_PCT / 100).toFixed(2) });
+        openPos = null;
       }
     }
 
     if (!openPos && checkEntry(klines, i)) {
-      openPos = { entry: k.close, halfDone: false, halfPnl: 0 };
+      openPos = { entry: k.close };
     }
   }
 
@@ -145,20 +149,14 @@ async function main() {
     process.stdout.write(`\r진행: ${i + 1}/${allSymbols.length} (${sym.padEnd(20)})`);
 
     try {
-      const raw = await httpGet(
-        `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${sym}&interval=${CONFIG.INTERVAL}&limit=${CONFIG.CANDLE_LIMIT}`
-      );
-      const klines = raw.map(k => ({
-        open: parseFloat(k[1]), high: parseFloat(k[2]),
-        low:  parseFloat(k[3]), close: parseFloat(k[4]),
-      }));
+      const klines = await getKlinesPaged(sym);
 
       const trades = simulateSymbol(klines);
       if (trades.length < CONFIG.MIN_TRADES) { await sleep(80); continue; }
 
       const totalPnl  = trades.reduce((s, t) => s + t.pnl, 0);
       const slCount   = trades.filter(t => t.action === "SL").length;
-      const winRate   = ((trades.length - slCount) / trades.length * 100);
+      const winRate   = (trades.filter(t => t.action === "TP").length / trades.length * 100);
 
       results.push({ sym, trades: trades.length, winRate, totalPnl, slCount });
     } catch (_) {}
@@ -178,29 +176,19 @@ async function main() {
     }
   };
 
-  // 손익 워스트
-  const worstPnl     = [...results].sort((a, b) => a.totalPnl - b.totalPnl).slice(0, CONFIG.TOP_N);
-  // 승률 워스트
-  const worstWinRate = [...results].sort((a, b) => a.winRate - b.winRate).slice(0, CONFIG.TOP_N);
-  // 패 > 승 종목 (승률 50% 미만, 손익 기준 정렬)
-  const moreLoss     = results.filter(r => r.winRate < 50).sort((a, b) => a.totalPnl - b.totalPnl);
+  // 손실 종목 전체 (손익 기준 오름차순)
+  const losers = results.filter(r => r.totalPnl < 0).sort((a, b) => a.totalPnl - b.totalPnl);
+  // 손익 워스트 TOP_N
+  const worstPnl = [...results].sort((a, b) => a.totalPnl - b.totalPnl).slice(0, CONFIG.TOP_N);
 
-  console.log(`▶ 손익 워스트 ${CONFIG.TOP_N}`);
+  console.log(`▶ 손실 종목 전체 (${losers.length}개 / 유효 ${results.length}개)`);
+  printTable(losers);
+
+  console.log(`\n▶ 손익 워스트 ${CONFIG.TOP_N}`);
   printTable(worstPnl);
 
-  console.log(`\n▶ 승률 워스트 ${CONFIG.TOP_N}`);
-  printTable(worstWinRate);
-
-  console.log(`\n▶ 패 > 승 종목 (승률 50% 미만, 총 ${moreLoss.length}개)`);
-  printTable(moreLoss);
-
-  // 손익+승률 교집합 (제외 추천)
-  const pnlSet = new Set(worstPnl.map(r => r.sym));
-  const both   = worstWinRate.filter(r => pnlSet.has(r.sym));
-  if (both.length) {
-    console.log(`\n▶ 손익+승률 모두 워스트 (제외 추천)`);
-    console.log(both.map(r => `"${r.sym}"`).join(", "));
-  }
+  console.log(`\n▶ 제외 추천 심볼 목록`);
+  console.log(losers.map(r => `"${r.sym}"`).join(", "));
 }
 
 main().catch(e => console.error("에러:", e.message));
