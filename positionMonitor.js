@@ -184,32 +184,28 @@ async function checkAndClosePositions(hedgeMode) {
   // 보유 중인 심볼의 stepSize만 조회
   const stepSizes = await getSymbolStepSizes([...activeSymbols]);
 
-  // 포지션 50개 초과 시 수익률 높은 순으로 초과분 청산
+  // 포지션 50개 초과 시 수익률 3% 이상인 종목 전량 청산
   if (positions.length > CONFIG.MAX_POSITIONS) {
-    const excess = positions.length - CONFIG.MAX_POSITIONS;
-    const byPnl  = [...positions].sort((a, b) => {
-      const pA = ((parseFloat(a.markPrice) - parseFloat(a.entryPrice)) / parseFloat(a.entryPrice)) * 100;
-      const pB = ((parseFloat(b.markPrice) - parseFloat(b.entryPrice)) / parseFloat(b.entryPrice)) * 100;
-      return pB - pA;
-    });
-    const toClose = byPnl.slice(0, excess);
-    console.log(`  [MAX_POS] 포지션 ${positions.length}개 > ${CONFIG.MAX_POSITIONS}개 → 수익률 상위 ${excess}개 청산`);
+    const toClose = positions
+      .map(p => ({ ...p, pnlPct: ((parseFloat(p.markPrice) - parseFloat(p.entryPrice)) / parseFloat(p.entryPrice)) * 100 }))
+      .filter(p => p.pnlPct >= 3)
+      .sort((a, b) => b.pnlPct - a.pnlPct);
+    console.log(`  [MAX_POS] 포지션 ${positions.length}개 > ${CONFIG.MAX_POSITIONS}개 → +3% 이상 ${toClose.length}개 청산`);
     for (const pos of toClose) {
       const sym     = pos.symbol;
       const qty     = Math.abs(parseFloat(pos.positionAmt));
       const entry   = parseFloat(pos.entryPrice);
       const mark    = parseFloat(pos.markPrice);
-      const pnlPct  = ((mark - entry) / entry) * 100;
       const posSide = hedgeMode ? "&positionSide=LONG" : "";
       try {
         const sellQs = `symbol=${sym}&side=SELL${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
         const order  = await httpPostSigned("/fapi/v1/order", `${sellQs}&signature=${sign(sellQs)}`);
-        logTrade("MAX_POS_CLOSE", sym, entry, mark, qty, +pnlPct.toFixed(2), +(qty * (mark - entry)).toFixed(4), order.orderId);
-        console.log(`  [MAX_POS] ${sym} 청산 완료 (${pnlPct.toFixed(2)}%) orderId: ${order.orderId}`);
+        logTrade("MAX_POS_CLOSE", sym, entry, mark, qty, +pos.pnlPct.toFixed(2), +(qty * (mark - entry)).toFixed(4), order.orderId);
+        console.log(`  [MAX_POS] ${sym} 청산 완료 (${pos.pnlPct.toFixed(2)}%) orderId: ${order.orderId}`);
         await sendTelegram(
           `📊 <b>포지션 수 초과 청산</b>\n` +
           `<b>${sym}</b>  진입: $${entry} → 현재: $${mark}\n` +
-          `  수익률: ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% | orderId: ${order.orderId}`
+          `  수익률: +${pos.pnlPct.toFixed(2)}% | orderId: ${order.orderId}`
         );
       } catch (e) {
         console.error(`  [MAX_POS] ${sym} 청산 실패:`, e.message);
