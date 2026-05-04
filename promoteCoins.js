@@ -73,8 +73,8 @@ function main() {
     const action = cols[colAction]?.trim();
     if (!sym || !action) continue;
     if (!stats[sym]) stats[sym] = { tp: 0, sl: 0 };
-    if (action === "TP_HALF") stats[sym].tp++;
-    else if (action === "SL") stats[sym].sl++;
+    if (action === "TP_HALF" || action === "AUTO_CLOSE") stats[sym].tp++;
+    else if (action === "SL" || action === "AUTO_SL") stats[sym].sl++;
   }
 
   // 티어별 분류 (상위 티어 우선)
