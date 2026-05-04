@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-04 v29";
+const VERSION = "2026-05-04 v30";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -31,19 +31,20 @@ const CONFIG = {
   ORDER_USDT_MAJOR:    10000,
   LEVERAGE_MAJOR:      50,
   LEVERAGE_MAJOR_FALLBACK: 20,
-  RSI_THRESHOLD_MAJOR: 45,
-  BB_FROM_LOWER_MAJOR: 0.33,
-  RSI_THRESHOLD_TIER3: 40,
+  RSI_THRESHOLD_MAJOR: 45,  BB_FROM_LOWER_MAJOR: 0.33,
+  RSI_THRESHOLD_TIER1: 45,  BB_FROM_LOWER_TIER1: 0.25,
+  RSI_THRESHOLD_TIER2: 40,  BB_FROM_LOWER_TIER2: 0.15,
+  RSI_THRESHOLD_TIER3: 40,  BB_FROM_LOWER_TIER3: 0,
   // ── 코인 그룹 ──────────────────────────────────────────────────
   // 메이저: Cross 50x $10,000 / RSI<45 / BB+33%
   MAJOR_SYMBOLS:  ["ETHUSDT", "HYPEUSDT"],
-  // 1군: 성적 검증 완료 우량 알트 (향후 채워짐)
+  // 1군: 순익절>=5 / RSI<45 / BB+25%
   TIER1_SYMBOLS:  [],
-  // 2군: 향후 채워짐
+  // 2군: 순익절>=3 / RSI<40 / BB+15%
   TIER2_SYMBOLS:  [],
-  // 3군: 익절 실적 있는 종목 (RSI<40)
+  // 3군: 순익절>=1 / RSI<40 / BB하단
   TIER3_SYMBOLS:  [],
-  // 언랭: 나머지 전체 (RSI<35, 기본 조건)
+  // 언랭: 나머지 전체 / RSI<35 / BB하단
   // 블랙: 제외 종목
   EXCLUDE_SYMBOLS: [
     "PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "EVAAUSDT", "ARIAUSDT", "BASEDUSDT",
@@ -504,11 +505,18 @@ async function main() {
       try {
         const klines = await getKlines(sym);
         const isMajor = CONFIG.MAJOR_SYMBOLS.includes(sym);
+        const isTier1 = CONFIG.TIER1_SYMBOLS.includes(sym);
+        const isTier2 = CONFIG.TIER2_SYMBOLS.includes(sym);
         const isTier3 = CONFIG.TIER3_SYMBOLS.includes(sym);
         const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR
+                           : isTier1 ? CONFIG.RSI_THRESHOLD_TIER1
+                           : isTier2 ? CONFIG.RSI_THRESHOLD_TIER2
                            : isTier3 ? CONFIG.RSI_THRESHOLD_TIER3
                            : CONFIG.RSI_THRESHOLD;
-        const bbFromLower  = isMajor ? CONFIG.BB_FROM_LOWER_MAJOR : 0;
+        const bbFromLower  = isMajor ? CONFIG.BB_FROM_LOWER_MAJOR
+                           : isTier1 ? CONFIG.BB_FROM_LOWER_TIER1
+                           : isTier2 ? CONFIG.BB_FROM_LOWER_TIER2
+                           : 0;
         const r = analyze(sym, klines, rsiThreshold, bbFromLower);
         if (r) {
           r.vol = volMap[sym] || 0;
