@@ -111,36 +111,27 @@ async function main() {
     return;
   }
 
-  // 심볼별로 그룹핑 → 1심볼 1행 (마지막 청산 시각 기준)
-  const bySymbol = {};
-  for (const item of filtered) {
-    const sym = item.symbol;
-    if (!bySymbol[sym]) bySymbol[sym] = { pnl: 0, lastTime: 0, lastTranId: "" };
-    bySymbol[sym].pnl += parseFloat(item.income);
-    if (item.time > bySymbol[sym].lastTime) {
-      bySymbol[sym].lastTime   = item.time;
-      bySymbol[sym].lastTranId = item.tranId;
-    }
-  }
-
+  // 건별 1행씩 기록
   let appendCount = 0;
   let appendLines = "";
+  let totalPnl = 0, wins = 0;
 
-  for (const [sym, d] of Object.entries(bySymbol)) {
-    const action   = d.pnl >= 0 ? "AUTO_CLOSE" : "AUTO_SL";
-    const pnlUsdt  = d.pnl.toFixed(4);
-    const datetime = fmtDatetime(d.lastTime);
-    appendLines += `${datetime},${sym},${action},,,,,${pnlUsdt},MANUAL,${d.lastTranId}\n`;
+  for (const item of filtered) {
+    const pnl     = parseFloat(item.income);
+    const action  = pnl >= 0 ? "AUTO_CLOSE" : "AUTO_SL";
+    const pnlUsdt = pnl.toFixed(4);
+    const datetime = fmtDatetime(item.time);
+    appendLines += `${datetime},${item.symbol},${action},,,,,${pnlUsdt},MANUAL,${item.tranId}\n`;
+    totalPnl += pnl;
+    if (pnl >= 0) wins++;
     appendCount++;
   }
 
   fs.appendFileSync(CONFIG.LOG_FILE, appendLines, "utf8");
-  console.log(`${appendCount}개 종목 추가 완료`);
+  console.log(`${appendCount}건 추가 완료`);
 
   // 요약 출력
-  const totalPnl = Object.values(bySymbol).reduce((s, d) => s + d.pnl, 0);
-  const wins = Object.values(bySymbol).filter(d => d.pnl >= 0).length;
-  console.log(`수익 ${wins}개 / 손실 ${appendCount - wins}개 / 총 ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USDT`);
+  console.log(`수익 ${wins}건 / 손실 ${appendCount - wins}건 / 총 ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USDT`);
 }
 
 main().catch(e => console.error("에러:", e.message));
