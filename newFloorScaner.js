@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-04 v33";
+const VERSION = "2026-05-04 v34";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -23,6 +23,7 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
+  MARKET_BIAS:        5,   // 상승장 +5 / 하락장 -5 / 중립 0
   ORDER_USDT:          1000,
   ORDER_USDT_TIER2:    1500,
   ORDER_USDT_TIER1:    2000,
@@ -512,11 +513,12 @@ async function main() {
         const isTier1 = CONFIG.TIER1_SYMBOLS.includes(sym);
         const isTier2 = CONFIG.TIER2_SYMBOLS.includes(sym);
         const isTier3 = CONFIG.TIER3_SYMBOLS.includes(sym);
-        const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR
+        const rsiBase      = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR
                            : isTier1 ? CONFIG.RSI_THRESHOLD_TIER1
                            : isTier2 ? CONFIG.RSI_THRESHOLD_TIER2
                            : isTier3 ? CONFIG.RSI_THRESHOLD_TIER3
                            : CONFIG.RSI_THRESHOLD;
+        const rsiThreshold = rsiBase + CONFIG.MARKET_BIAS;
         const bbFromLower  = isMajor ? CONFIG.BB_FROM_LOWER_MAJOR
                            : isTier1 ? CONFIG.BB_FROM_LOWER_TIER1
                            : isTier2 ? CONFIG.BB_FROM_LOWER_TIER2
