@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-03 v27";
+const VERSION = "2026-05-03 v28";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -31,7 +31,8 @@ const CONFIG = {
   ORDER_USDT_MAJOR:    10000,
   LEVERAGE_MAJOR:      50,
   LEVERAGE_MAJOR_FALLBACK: 20,
-  RSI_THRESHOLD_MAJOR: 40,
+  RSI_THRESHOLD_MAJOR: 45,
+  BB_FROM_LOWER_MAJOR: 0.33,
   EXCLUDE_SYMBOLS:    [
     "PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "EVAAUSDT", "ARIAUSDT", "BASEDUSDT",
     "STXUSDT", "MANAUSDT", "COMPUSDT", "HBARUSDT", "WOOUSDT", "ICPUSDT", "ACHUSDT", "TUSDT",
@@ -157,6 +158,15 @@ function calcBollingerLower(closes, period = 20, mult = 2) {
   return mean - mult * std;
 }
 
+function calcBollingerThreshold(closes, period = 20, mult = 2, fromLower = 0) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const mean  = slice.reduce((s, v) => s + v, 0) / period;
+  const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
+  const lower = mean - mult * std;
+  return lower + (mean - lower) * fromLower;
+}
+
 // ─── 쿨다운 ──────────────────────────────────────────────────────────────────
 function loadState() {
   try {
@@ -279,7 +289,7 @@ async function placeStopLoss(symbol, entryPrice, qty, tickSize, hedgeMode) {
 }
 
 // ─── 분석 ─────────────────────────────────────────────────────────────────────
-function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD) {
+function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD, bbFromLower = 0) {
   if (klines.length < CONFIG.CANDLE_LIMIT) return null;
 
   const closes  = klines.map(k => k.close);
@@ -308,10 +318,10 @@ function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD) {
   if (cur.close > prevMid) return null;
 
   // 직전봉 저가가 볼린저 하단(20, 2) 아래로 이탈
-  const bbLower = calcBollingerLower(prevCloses);
+  const bbThreshold = calcBollingerThreshold(prevCloses, 20, 2, bbFromLower);
   const prevLow = klines[lastIdx - 1].low;
   const prevAvg = (prevLow + prev.close) / 2;
-  if (!bbLower || prevAvg >= bbLower) return null;
+  if (!bbThreshold || prevAvg >= bbThreshold) return null;
 
   return {
     symbol,
@@ -484,7 +494,8 @@ async function main() {
         const klines = await getKlines(sym);
         const isMajor = CONFIG.MAJOR_SYMBOLS.includes(sym);
         const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR : CONFIG.RSI_THRESHOLD;
-        const r = analyze(sym, klines, rsiThreshold);
+        const bbFromLower  = isMajor ? CONFIG.BB_FROM_LOWER_MAJOR : 0;
+        const r = analyze(sym, klines, rsiThreshold, bbFromLower);
         if (r) {
           r.vol = volMap[sym] || 0;
           r.isMajor = isMajor;

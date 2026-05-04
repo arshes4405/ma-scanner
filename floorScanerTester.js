@@ -17,7 +17,8 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
-  RSI_THRESHOLD_MAJOR: 40,
+  RSI_THRESHOLD_MAJOR: 45,
+  BB_FROM_LOWER_MAJOR: 0.33,
   MAJOR_SYMBOLS:      ["BTCUSDT", "ETHUSDT", "SOLUSDT", "HYPEUSDT"],
 
   LOG_FILE:           path.join(__dirname, "floor_v2_log.txt"),
@@ -87,6 +88,15 @@ function calcBollingerLower(closes, period = 20, mult = 2) {
   return mean - mult * std;
 }
 
+function calcBollingerThreshold(closes, period = 20, mult = 2, fromLower = 0) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const mean  = slice.reduce((s, v) => s + v, 0) / period;
+  const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
+  const lower = mean - mult * std;
+  return lower + (mean - lower) * fromLower;
+}
+
 // ─── API ─────────────────────────────────────────────────────────────────────
 async function getAllSymbols() {
   const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
@@ -120,7 +130,7 @@ async function getKlines(symbol) {
 }
 
 // ─── 분석 (조건별 결과 반환) ───────────────────────────────────────────────────
-function analyzeWithLog(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD) {
+function analyzeWithLog(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD, bbFromLower = 0) {
   if (klines.length < CONFIG.CANDLE_LIMIT) return { pass: false, reason: "캔들 부족" };
 
   const closes  = klines.map(k => k.close);
@@ -157,13 +167,13 @@ function analyzeWithLog(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD) {
     return { pass: false, reason: `현재가 직전봉 중간값 초과 (cur:${cur.close.toFixed(4)} > mid:${prevMid.toFixed(4)})` };
 
   // 6. BB 하단 이탈 (직전봉 저가)
-  const bbLower = calcBollingerLower(prevCloses);
-  if (!bbLower)
+  const bbThreshold = calcBollingerThreshold(prevCloses, 20, 2, bbFromLower);
+  if (!bbThreshold)
     return { pass: false, reason: "BB 계산 불가" };
   const prevLow = prev.low;
   const prevAvg = (prevLow + prev.close) / 2;
-  if (prevAvg >= bbLower)
-    return { pass: false, reason: `BB하단 미이탈 (avg:${prevAvg.toFixed(4)} > bb:${bbLower.toFixed(4)})` };
+  if (prevAvg >= bbThreshold)
+    return { pass: false, reason: `BB 미이탈 (avg:${prevAvg.toFixed(4)} > bb:${bbThreshold.toFixed(4)})` };
 
   return {
     pass: true,
@@ -196,7 +206,8 @@ async function main() {
         const klines = await getKlines(sym);
         const isMajor = CONFIG.MAJOR_SYMBOLS.includes(sym);
         const rsiThreshold = isMajor ? CONFIG.RSI_THRESHOLD_MAJOR : CONFIG.RSI_THRESHOLD;
-        const result = analyzeWithLog(sym, klines, rsiThreshold);
+        const bbFromLower  = isMajor ? CONFIG.BB_FROM_LOWER_MAJOR : 0;
+        const result = analyzeWithLog(sym, klines, rsiThreshold, bbFromLower);
 
         if (result.pass) {
           counter["통과"]++;
