@@ -80,8 +80,9 @@ MA 스캐너 프로젝트 작업현황
   │  [코인 그룹]                                              │
   │  - 메이저 : ETHUSDT, HYPEUSDT (Cross 50x, RSI<45, BB+33%)│
   │  - 1군    : 성적 검증 완료 우량 알트 (현재 없음)          │
-  │  - 2군    : 일반 알트 기본 조건 (현재 전종목)             │
-  │  - 3군    : 성적 양호 → 승격 대기 (현재 없음)             │
+  │  - 2군    : 현재 없음                                     │
+  │  - 3군    : 익절 실적 있는 종목 / RSI<40 (현재 없음)      │
+  │  - 언랭   : 나머지 전체 / RSI<35 기본 조건               │
   │  - 블랙   : PLAY RAVE MEGA QNT XVS WLD BRU MERL EVAA     │
   │             ARIA BASED STX MANA COMP HBAR WOO ICP ACH T  │
   │             DUSK IOST FLOW FET HIGH BEL GTC (25종목)      │

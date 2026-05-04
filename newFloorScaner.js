@@ -39,10 +39,11 @@ const CONFIG = {
   MAJOR_SYMBOLS:  ["ETHUSDT", "HYPEUSDT"],
   // 1군: 성적 검증 완료 우량 알트 (향후 채워짐)
   TIER1_SYMBOLS:  [],
-  // 2군: 일반 알트 기본 조건 (현재 모든 종목 기본값)
+  // 2군: 향후 채워짐
   TIER2_SYMBOLS:  [],
-  // 3군: 성적 양호 → 승격 대기 (향후 채워짐)
+  // 3군: 익절 실적 있는 종목 (RSI<40)
   TIER3_SYMBOLS:  [],
+  // 언랭: 나머지 전체 (RSI<35, 기본 조건)
   // 블랙: 제외 종목
   EXCLUDE_SYMBOLS: [
     "PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "EVAAUSDT", "ARIAUSDT", "BASEDUSDT",
