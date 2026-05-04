@@ -23,7 +23,7 @@ const CONFIG = {
   REQUEST_DELAY:      120,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
-  MARKET_BIAS:        5,   // 상승장 +5 / 하락장 -5 / 중립 0
+  MARKET_BIAS:        0,   // 상승장 +5 / 하락장 -5 / 중립 0
   ORDER_USDT:          1000,
   ORDER_USDT_TIER2:    1500,
   ORDER_USDT_TIER1:    2000,
