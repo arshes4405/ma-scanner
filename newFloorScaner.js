@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v37";
+const VERSION = "2026-05-05 v38";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -31,8 +31,9 @@ const CONFIG = {
   MAX_INVESTED:        1500,
   MAX_INVESTED_TIER2:  2250,
   MAX_INVESTED_TIER1:  3000,
-  LEVERAGE:            20,
-  LEVERAGE_FALLBACK:   10,
+  LEVERAGE:            30,
+  LEVERAGE_FALLBACK:   20,
+  LEVERAGE_FALLBACK2:  10,
   ORDER_USDT_MAJOR:    10000,
   LEVERAGE_MAJOR:      50,
   LEVERAGE_MAJOR_FALLBACK: 20,
@@ -566,8 +567,15 @@ async function main() {
                   } catch (e1) {
                     console.log(`  [RETRY] ${sym} DCA ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
                     usedLeverage = CONFIG.LEVERAGE_FALLBACK;
-                    await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
-                    order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                    try {
+                      await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
+                      order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                    } catch (e2) {
+                      console.log(`  [RETRY] ${sym} DCA ${CONFIG.LEVERAGE_FALLBACK}x 실패 → ${CONFIG.LEVERAGE_FALLBACK2}x 재시도`);
+                      usedLeverage = CONFIG.LEVERAGE_FALLBACK2;
+                      await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK2);
+                      order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                    }
                   }
                   const newInvested = stateEntry.totalInvested + addAmount;
                   updateState(state, sym, curCandleTime, newInvested);
@@ -606,9 +614,17 @@ async function main() {
               } catch (e1) {
                 console.log(`  [RETRY] ${sym} ${CONFIG.LEVERAGE}x 실패 → ${CONFIG.LEVERAGE_FALLBACK}x 재시도`);
                 usedLeverage = CONFIG.LEVERAGE_FALLBACK;
-                await setMarginType(sym);
-                await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
-                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, orderAmt);
+                try {
+                  await setMarginType(sym);
+                  await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
+                  order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, orderAmt);
+                } catch (e2) {
+                  console.log(`  [RETRY] ${sym} ${CONFIG.LEVERAGE_FALLBACK}x 실패 → ${CONFIG.LEVERAGE_FALLBACK2}x 재시도`);
+                  usedLeverage = CONFIG.LEVERAGE_FALLBACK2;
+                  await setMarginType(sym);
+                  await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK2);
+                  order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, orderAmt);
+                }
               }
               updateState(state, sym, curCandleTime, orderAmt);
               saveState(state);
