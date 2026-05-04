@@ -19,7 +19,7 @@ const CONFIG = {
   SL_PCT:             3,
   TP_PCT:             5,
   MAX_MARGIN_USDT:    2000,
-  MAX_POSITIONS:      50,
+  MAX_POSITIONS:      55,
   TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
   TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
 };
