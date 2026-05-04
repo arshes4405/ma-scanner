@@ -1,6 +1,6 @@
 ================================================================
 MA 스캐너 프로젝트 작업현황
-최종 업데이트: 2026-05-04
+최종 업데이트: 2026-05-04 (v30)
 ================================================================
 
 ▶ 프로젝트 개요
@@ -56,7 +56,7 @@ MA 스캐너 프로젝트 작업현황
   │  [실행] GitHub Actions: 매 2시간 UTC :30분 자동 실행      │
   └───────────────────────────────────────────────────────────┘
 
-  ┌─ [2] 바닥 스캐너 (newFloorScaner.js) v28 ─────────────────┐
+  ┌─ [2] 바닥 스캐너 (newFloorScaner.js) v30 ─────────────────┐
   │  매수 전용 (SL/TP는 positionMonitor.js 분리)              │
   │                                                           │
   │  [진입 조건] 전체 AND                                     │
@@ -78,14 +78,14 @@ MA 스캐너 프로젝트 작업현황
   │  - floor_state.json: candleTime + totalInvested 추적      │
   │                                                           │
   │  [코인 그룹]                                              │
-  │  - 메이저 : ETHUSDT, HYPEUSDT (Cross 50x, RSI<45, BB+33%)│
-  │  - 1군    : 성적 검증 완료 우량 알트 (현재 없음)          │
-  │  - 2군    : 현재 없음                                     │
-  │  - 3군    : 익절 실적 있는 종목 / RSI<40 (현재 없음)      │
-  │  - 언랭   : 나머지 전체 / RSI<35 기본 조건               │
-  │  - 블랙   : PLAY RAVE MEGA QNT XVS WLD BRU MERL EVAA     │
-  │             ARIA BASED STX MANA COMP HBAR WOO ICP ACH T  │
-  │             DUSK IOST FLOW FET HIGH BEL GTC (25종목)      │
+  │  - 메이저 : ETHUSDT, HYPEUSDT (Cross50x, RSI<45, BB+33%) │
+  │  - 1군    : 순익절>=5 / RSI<45 / BB+25% (현재 없음)      │
+  │  - 2군    : 순익절>=3 / RSI<40 / BB+15% (현재 없음)      │
+  │  - 3군    : 순익절>=1 / RSI<40 / BB하단 (현재 11종목)    │
+  │             ZEREBRO INIT BULLA HANA SKYAI SOLV CLO       │
+  │             PENGU MOODENG LUMIA PIEVERSE                  │
+  │  - 언랭   : 나머지 전체 / RSI<35 / BB하단               │
+  │  - 블랙   : 30종목 (6개월 손실 + 순익절<=-2 자동 편입)   │
   │                                                           │
   │  [실행] crontab: 5-55/10 * * * * (5분부터 10분마다)       │
   └───────────────────────────────────────────────────────────┘
@@ -181,8 +181,14 @@ MA 스캐너 프로젝트 작업현황
     · 메이저/1군/2군/3군/블랙 5단계 그룹
     · 블랙리스트 25종목 (6개월 손실 성적 기반)
     · BTC/SOL 메이저에서 제외 (비트 추종 성향)
-  - 제외 코인 추가: EVAA, ARIA, BASED, STX, MANA, COMP,
-    HBAR, WOO, ICP, ACH, T, DUSK, IOST, FLOW, FET, HIGH, BEL, GTC
+  - v29: 3군 RSI 40 적용
+  - v30: 1군/2군 RSI+BB 조건 추가
+    · 1군: RSI<45 / BB+25% | 2군: RSI<40 / BB+15%
+  - promoteCoins.js: trade_log.csv 기반 자동 티어 승격/블랙 편입
+    · 3군(순익절>=1), 2군(>=3), 1군(>=5), 블랙(순익절<=-2)
+    · source=SYSTEM 거래만 집계
+    · 현재 3군 11개: ZEREBRO INIT BULLA HANA SKYAI SOLV CLO PENGU MOODENG LUMIA PIEVERSE
+  - GitHub Actions 제거 (서버 crontab으로 충분)
 
 ----------------------------------------------------------------
 ▶ 향후 계획 (2-3개월 데이터 후 검토)
