@@ -43,7 +43,7 @@ const CONFIG = {
   // 2군: 순익절>=3 / RSI<40 / BB+15%
   TIER2_SYMBOLS:  [],
   // 3군: 순익절>=1 / RSI<40 / BB하단
-  TIER3_SYMBOLS:  [],
+  TIER3_SYMBOLS:  ["ZEREBROUSDT", "INITUSDT", "BULLAUSDT", "HANAUSDT", "SKYAIUSDT", "SOLVUSDT", "CLOUSDT", "PENGUUSDT", "MOODENGUSDT", "LUMIAUSDT", "PIEVERSEUSDT"],
   // 언랭: 나머지 전체 / RSI<35 / BB하단
   // 블랙: 제외 종목
   EXCLUDE_SYMBOLS: [
