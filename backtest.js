@@ -1,13 +1,22 @@
 const https = require("https");
 
-const VERSION = "2026-05-05 v10";
+const VERSION = "2026-05-05 v15";
 
 const PERIODS = [
   { label: "하락장 (1~2월)", start: "2026-01-01", end: "2026-02-28" },
   { label: "상승장 (3~4월)", start: "2026-03-01", end: "2026-04-30" },
 ];
 
-const COMPARE_VOLUME = true;  // true: 거래량 상위250 vs 나머지 비교 (메이저/티어 제외)
+const BIAS_TEST     = false;
+const BIAS_VALUES   = [-5, 0, 5];
+const BIAS_PERIOD   = PERIODS[1];
+
+const ADAPTIVE_TEST = false;
+const ADAPTIVE_PERIOD = { start: "2026-01-01", end: "2026-04-30" };
+
+const ETH_RSI_TEST   = false;  // ETH 주봉 RSI 필터: 전주대비 RSI 상승 → 알트 매수 허용
+const ETHBTC_TEST    = true;   // ETH/BTC 비율 필터: 전주대비 ETH/BTC 상승 → 알트 매수 허용
+const ETH_RSI_PERIOD = { start: "2026-01-01", end: "2026-04-30" };
 
 const CONFIG = {
   BASE_URL:      "https://fapi.binance.com",
@@ -223,10 +232,404 @@ async function main() {
     .filter(s => !excludeSet.has(s))
     .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT)
     .sort((a, b) => (volMap[b] || 0) - (volMap[a] || 0));
-  const unrankedTop  = unrankedAll.slice(0, CONFIG.UNRANKED_LIMIT);
   const unrankedRest = unrankedAll.slice(CONFIG.UNRANKED_LIMIT);
-  const symbols = unrankedAll;
-  console.log(`대상: 언랭 전체 ${unrankedAll.length}개 (상위${CONFIG.UNRANKED_LIMIT} vs 나머지 ${unrankedRest.length}개)\n`);
+  const symbols = BIAS_TEST ? unrankedRest : unrankedAll;
+  console.log(`대상: ${BIAS_TEST ? `251위~ ${unrankedRest.length}개 (BIAS 비교)` : `전체 ${unrankedAll.length}개`}\n`);
+
+  // BIAS 비교 모드
+  if (BIAS_TEST) {
+    const period = BIAS_PERIOD;
+    console.log(`\n${"═".repeat(65)}`);
+    console.log(` ▶ MARKET_BIAS 비교  |  ${period.label}  (${period.start} ~ ${period.end})`);
+    console.log(`${"═".repeat(65)}`);
+
+    const klinesMap = {};
+    for (let i = 0; i < symbols.length; i++) {
+      process.stdout.write(`\r  캔들 로드 중: ${i + 1}/${symbols.length} (${symbols[i]})          `);
+      try { klinesMap[symbols[i]] = await getKlinesPaged(symbols[i], period.start, period.end); } catch (_) {}
+      await sleep(300);
+    }
+    console.log(`\n`);
+
+    console.log(`${"─".repeat(65)}`);
+    console.log(` ${"BIAS".padEnd(10)} ${"거래".padStart(5)}   ${"익절".padStart(4)}   ${"손절".padStart(4)}   ${"승률".padStart(6)}   ${"손익".padStart(13)}`);
+    console.log(`${"─".repeat(65)}`);
+    for (const bias of BIAS_VALUES) {
+      const rsi = CONFIG.RSI_THRESHOLD + bias;
+      const trades = [];
+      for (const sym of symbols) {
+        if (klinesMap[sym]) trades.push(...simulateSymbol(sym, klinesMap[sym], rsi, CONFIG.BB_FROM_LOWER, CONFIG.ORDER_USDT));
+      }
+      printSummary(`BIAS ${bias >= 0 ? "+" : ""}${bias} (RSI<${rsi})`, trades, CONFIG.ORDER_USDT);
+    }
+    console.log(`${"─".repeat(65)}\n`);
+    return;
+  }
+
+  // ADAPTIVE MARKET_BIAS 모드
+  if (ADAPTIVE_TEST) {
+    const period = ADAPTIVE_PERIOD;
+    console.log(`\n${"═".repeat(75)}`);
+    console.log(` ▶ ADAPTIVE BIAS 테스트  |  ${period.start} ~ ${period.end}  (전주 수익→-5, 손실→+5 / 평균회귀)`);
+    console.log(`  대상: 거래량 ${CONFIG.UNRANKED_LIMIT + 1}위~ ${unrankedRest.length}개`);
+    console.log(`${"═".repeat(75)}`);
+
+    // 주별 날짜 범위 생성
+    const weeks = [];
+    let cur = new Date(period.start + "T00:00:00Z");
+    const periodEnd = new Date(period.end + "T23:59:59Z");
+    while (cur <= periodEnd) {
+      const wStart = new Date(cur);
+      const wEnd   = new Date(cur);
+      wEnd.setUTCDate(wEnd.getUTCDate() + 6);
+      if (wEnd > periodEnd) wEnd.setTime(periodEnd.getTime());
+      weeks.push({ start: wStart.toISOString().slice(0, 10), end: wEnd.toISOString().slice(0, 10) });
+      cur.setUTCDate(cur.getUTCDate() + 7);
+    }
+
+    // 전 기간 캔들 한번에 로드
+    const klinesMap = {};
+    for (let i = 0; i < unrankedRest.length; i++) {
+      process.stdout.write(`\r  캔들 로드 중: ${i + 1}/${unrankedRest.length} (${unrankedRest[i]})          `);
+      try { klinesMap[unrankedRest[i]] = await getKlinesPaged(unrankedRest[i], period.start, period.end); } catch (_) {}
+      await sleep(300);
+    }
+    console.log(`\n`);
+
+    // 주별 시뮬레이션
+    console.log(`${"─".repeat(75)}`);
+    console.log(` ${"주차".padEnd(22)} ${"BIAS".padStart(6)} ${"거래".padStart(5)}   ${"익절".padStart(4)}   ${"손절".padStart(4)}   ${"승률".padStart(6)}   ${"손익".padStart(13)}`);
+    console.log(`${"─".repeat(75)}`);
+
+    let bias = 0;
+    let totalPnl = 0;
+    const totalTrades = [];
+    let monthTrades = [];
+    let curMonth = weeks[0]?.start.slice(0, 7);
+
+    function flushMonth(label) {
+      const tp  = monthTrades.filter(t => t.action === "TP").length;
+      const sl  = monthTrades.filter(t => t.action === "SL").length;
+      const pnl = monthTrades.reduce((s, t) => s + t.pnl, 0);
+      const wr  = monthTrades.length ? (tp / monthTrades.length * 100).toFixed(1) : "0.0";
+      const pnlStr = (pnl >= 0 ? "+" : "") + pnl.toFixed(0) + " USDT";
+      console.log(`${"─".repeat(75)}`);
+      console.log(` ${label.padEnd(22)} ${"".padStart(6)} ${String(monthTrades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${(wr + "%").padStart(6)}   ${pnlStr.padStart(13)}`);
+      console.log(`${"─".repeat(75)}`);
+      monthTrades = [];
+    }
+
+    for (let w = 0; w < weeks.length; w++) {
+      const wk = weeks[w];
+      const wkMonth = wk.start.slice(0, 7);
+      if (wkMonth !== curMonth) {
+        flushMonth(`[${curMonth} 합계]`);
+        curMonth = wkMonth;
+      }
+      const rsi = CONFIG.RSI_THRESHOLD + bias;
+      const wkStartMs = new Date(wk.start + "T00:00:00Z").getTime();
+      const wkEndMs   = new Date(wk.end   + "T23:59:59Z").getTime();
+      const trades = [];
+      for (const sym of unrankedRest) {
+        if (!klinesMap[sym]) continue;
+        simulateSymbol(sym, klinesMap[sym], rsi, CONFIG.BB_FROM_LOWER, CONFIG.ORDER_USDT)
+          .filter(t => t.time >= wkStartMs && t.time <= wkEndMs)
+          .forEach(t => trades.push(t));
+      }
+      const tp  = trades.filter(t => t.action === "TP").length;
+      const sl  = trades.filter(t => t.action === "SL").length;
+      const pnl = trades.reduce((s, t) => s + t.pnl, 0);
+      const wr  = trades.length ? (tp / trades.length * 100).toFixed(1) : "0.0";
+      const label    = `${wk.start.slice(5)} ~ ${wk.end.slice(5)}`;
+      const biasStr  = (bias >= 0 ? "+" : "") + bias;
+      const pnlStr   = (pnl >= 0 ? "+" : "") + pnl.toFixed(0) + " USDT";
+      console.log(` ${label.padEnd(22)} ${biasStr.padStart(6)} ${String(trades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${(wr + "%").padStart(6)}   ${pnlStr.padStart(13)}`);
+      monthTrades.push(...trades);
+      totalTrades.push(...trades);
+      totalPnl += pnl;
+      bias = pnl >= 0 ? -5 : 5;  // 평균회귀: 전주 수익→보수적, 전주 손실→공격적
+    }
+    if (monthTrades.length) flushMonth(`[${curMonth} 합계]`);
+    console.log(`${"─".repeat(75)}`);
+    {
+      const tp = totalTrades.filter(t => t.action === "TP").length;
+      const sl = totalTrades.filter(t => t.action === "SL").length;
+      const wr = totalTrades.length ? (tp / totalTrades.length * 100).toFixed(1) : "0.0";
+      const pnlStr = (totalPnl >= 0 ? "+" : "") + totalPnl.toFixed(0) + " USDT";
+      console.log(` ${"[전체 합계]".padEnd(22)} ${"".padStart(6)} ${String(totalTrades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${(wr + "%").padStart(6)}   ${pnlStr.padStart(13)}`);
+    }
+    console.log(`${"─".repeat(75)}\n`);
+
+    // BIAS=0 고정 비교 (참고용)
+    const periodStartMs = new Date(period.start + "T00:00:00Z").getTime();
+    const periodEndMs   = new Date(period.end   + "T23:59:59Z").getTime();
+    const fixedTrades = [];
+    for (const sym of unrankedRest) {
+      if (!klinesMap[sym]) continue;
+      simulateSymbol(sym, klinesMap[sym], CONFIG.RSI_THRESHOLD, CONFIG.BB_FROM_LOWER, CONFIG.ORDER_USDT)
+        .filter(t => t.time >= periodStartMs && t.time <= periodEndMs)
+        .forEach(t => fixedTrades.push(t));
+    }
+    console.log(` [참고] BIAS 0 고정 (RSI<${CONFIG.RSI_THRESHOLD}):`);
+    printSummary(`BIAS 0 전체`, fixedTrades, CONFIG.ORDER_USDT);
+    console.log();
+    return;
+  }
+
+  // ETH 주봉 RSI 필터 모드
+  if (ETH_RSI_TEST) {
+    const period = ETH_RSI_PERIOD;
+    console.log(`\n${"═".repeat(85)}`);
+    console.log(` ▶ ETH 주봉 RSI 필터  |  ${period.start} ~ ${period.end}`);
+    console.log(`  조건: ETH 주봉 RSI > 전주 RSI → 알트 매수 허용`);
+    console.log(`  대상: 거래량 ${CONFIG.UNRANKED_LIMIT + 1}위~ ${unrankedRest.length}개`);
+    console.log(`${"═".repeat(85)}`);
+
+    // ETH 주봉 캔들 로드 (RSI 워밍업 16주 포함)
+    const ethWarmupMs = new Date(period.start + "T00:00:00Z").getTime() - 16 * 7 * 24 * 3600 * 1000;
+    const ethEndMs    = new Date(period.end   + "T23:59:59Z").getTime();
+    const ethRaw = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=ETHUSDT&interval=1w&startTime=${ethWarmupMs}&endTime=${ethEndMs}&limit=200`);
+    const ethWeekly = ethRaw.map(k => ({ openTime: k[0], close: parseFloat(k[4]) }));
+
+    // 특정 시점 기준 ETH 주봉 RSI 반환 (해당 시점 이전 완료된 캔들만 사용)
+    function ethRsiAt(beforeMs) {
+      const closed = ethWeekly.filter(k => k.openTime < beforeMs);
+      if (closed.length < 16) return null;
+      return calcRSI(closed.map(k => k.close), 14);
+    }
+
+    // 주차 생성
+    const weeks = [];
+    let cur = new Date(period.start + "T00:00:00Z");
+    const periodEnd = new Date(period.end + "T23:59:59Z");
+    while (cur <= periodEnd) {
+      const wStart = new Date(cur);
+      const wEnd   = new Date(cur);
+      wEnd.setUTCDate(wEnd.getUTCDate() + 6);
+      if (wEnd > periodEnd) wEnd.setTime(periodEnd.getTime());
+      weeks.push({ start: wStart.toISOString().slice(0, 10), end: wEnd.toISOString().slice(0, 10) });
+      cur.setUTCDate(cur.getUTCDate() + 7);
+    }
+
+    // 알트 캔들 로드
+    const klinesMap = {};
+    for (let i = 0; i < unrankedRest.length; i++) {
+      process.stdout.write(`\r  캔들 로드 중: ${i + 1}/${unrankedRest.length} (${unrankedRest[i]})          `);
+      try { klinesMap[unrankedRest[i]] = await getKlinesPaged(unrankedRest[i], period.start, period.end); } catch (_) {}
+      await sleep(300);
+    }
+    console.log(`\n`);
+
+    const W = 85;
+    console.log(`${"─".repeat(W)}`);
+    console.log(` ${"주차".padEnd(22)} ${"ETH RSI".padStart(8)} ${"상태".padStart(5)} ${"거래".padStart(5)}   ${"익절".padStart(4)}   ${"손절".padStart(4)}   ${"승률".padStart(6)}   ${"손익".padStart(13)}`);
+    console.log(`${"─".repeat(W)}`);
+
+    let totalPnl = 0;
+    const totalTrades = [];
+    let mTrades = [];
+    let curMonth = weeks[0]?.start.slice(0, 7);
+    let prevRsi  = null;
+
+    function flushEthMonth(label) {
+      const tp  = mTrades.filter(t => t.action === "TP").length;
+      const sl  = mTrades.filter(t => t.action === "SL").length;
+      const pnl = mTrades.reduce((s, t) => s + t.pnl, 0);
+      const wr  = mTrades.length ? (tp / mTrades.length * 100).toFixed(1) : "0.0";
+      const pnlStr = (pnl >= 0 ? "+" : "") + pnl.toFixed(0) + " USDT";
+      console.log(`${"─".repeat(W)}`);
+      console.log(` ${label.padEnd(22)} ${"".padStart(8)} ${"".padStart(5)} ${String(mTrades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${(wr + "%").padStart(6)}   ${pnlStr.padStart(13)}`);
+      console.log(`${"─".repeat(W)}`);
+      mTrades = [];
+    }
+
+    for (const wk of weeks) {
+      const wkMonth  = wk.start.slice(0, 7);
+      if (wkMonth !== curMonth) { flushEthMonth(`[${curMonth} 합계]`); curMonth = wkMonth; }
+
+      const wkStartMs = new Date(wk.start + "T00:00:00Z").getTime();
+      const wkEndMs   = new Date(wk.end   + "T23:59:59Z").getTime();
+
+      const rsi = ethRsiAt(wkStartMs);
+      const rsiStr  = rsi !== null ? rsi.toFixed(1) : " N/A";
+      const allowed = rsi !== null && prevRsi !== null && rsi > prevRsi;
+      const status  = allowed ? "매수" : "스킵";
+
+      const trades = [];
+      if (allowed) {
+        for (const sym of unrankedRest) {
+          if (!klinesMap[sym]) continue;
+          simulateSymbol(sym, klinesMap[sym], CONFIG.RSI_THRESHOLD, CONFIG.BB_FROM_LOWER, CONFIG.ORDER_USDT)
+            .filter(t => t.time >= wkStartMs && t.time <= wkEndMs)
+            .forEach(t => trades.push(t));
+        }
+      }
+      const tp  = trades.filter(t => t.action === "TP").length;
+      const sl  = trades.filter(t => t.action === "SL").length;
+      const pnl = trades.reduce((s, t) => s + t.pnl, 0);
+      const wr  = trades.length ? (tp / trades.length * 100).toFixed(1) : "-";
+      const label   = `${wk.start.slice(5)} ~ ${wk.end.slice(5)}`;
+      const pnlStr  = trades.length ? (pnl >= 0 ? "+" : "") + pnl.toFixed(0) + " USDT" : "-";
+      console.log(` ${label.padEnd(22)} ${rsiStr.padStart(8)} ${status.padStart(5)} ${String(trades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${wr.padStart(6)}   ${pnlStr.padStart(13)}`);
+
+      mTrades.push(...trades);
+      totalTrades.push(...trades);
+      totalPnl += pnl;
+      if (rsi !== null) prevRsi = rsi;
+    }
+    flushEthMonth(`[${curMonth} 합계]`);
+    console.log(` ${"[전체 합계]".padEnd(22)} ${"".padStart(8)} ${"".padStart(5)} ${String(totalTrades.length).padStart(5)}   ${String(totalTrades.filter(t=>t.action==="TP").length).padStart(4)}   ${String(totalTrades.filter(t=>t.action==="SL").length).padStart(4)}   ${(totalTrades.length?(totalTrades.filter(t=>t.action==="TP").length/totalTrades.length*100).toFixed(1)+"%" : "0.0%").padStart(6)}   ${((totalPnl>=0?"+":"")+totalPnl.toFixed(0)+" USDT").padStart(13)}`);
+    console.log(`${"─".repeat(W)}\n`);
+
+    // 필터 없음 비교
+    const pStartMs = new Date(period.start + "T00:00:00Z").getTime();
+    const pEndMs   = new Date(period.end   + "T23:59:59Z").getTime();
+    const noFilterTrades = [];
+    for (const sym of unrankedRest) {
+      if (!klinesMap[sym]) continue;
+      simulateSymbol(sym, klinesMap[sym], CONFIG.RSI_THRESHOLD, CONFIG.BB_FROM_LOWER, CONFIG.ORDER_USDT)
+        .filter(t => t.time >= pStartMs && t.time <= pEndMs)
+        .forEach(t => noFilterTrades.push(t));
+    }
+    console.log(` [참고] 필터 없음:`);
+    printSummary(`BIAS 0 전체`, noFilterTrades, CONFIG.ORDER_USDT);
+    console.log();
+    return;
+  }
+
+  // ETH/BTC 비율 방향 필터 모드
+  if (ETHBTC_TEST) {
+    const period = ETH_RSI_PERIOD;
+    console.log(`\n${"═".repeat(85)}`);
+    console.log(` ▶ ETH/BTC 비율 필터  |  ${period.start} ~ ${period.end}`);
+    console.log(`  조건: ETH/BTC 주봉 close > 전주 → 알트 매수 허용`);
+    console.log(`  대상: 거래량 ${CONFIG.UNRANKED_LIMIT + 1}위~ ${unrankedRest.length}개`);
+    console.log(`${"═".repeat(85)}`);
+
+    // ETH, BTC 주봉 캔들 로드
+    const warmupMs  = new Date(period.start + "T00:00:00Z").getTime() - 4 * 7 * 24 * 3600 * 1000;
+    const endMs     = new Date(period.end   + "T23:59:59Z").getTime();
+    const [ethRaw, btcRaw] = await Promise.all([
+      httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=ETHUSDT&interval=1w&startTime=${warmupMs}&endTime=${endMs}&limit=200`),
+      httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=BTCUSDT&interval=1w&startTime=${warmupMs}&endTime=${endMs}&limit=200`),
+    ]);
+    // ETH/BTC 비율 맵 생성 (openTime → ratio)
+    const btcMap = {};
+    for (const k of btcRaw) btcMap[k[0]] = parseFloat(k[4]);
+    const ethbtcWeekly = ethRaw
+      .filter(k => btcMap[k[0]])
+      .map(k => ({ openTime: k[0], ratio: parseFloat(k[4]) / btcMap[k[0]] }));
+
+    function ethbtcAt(beforeMs) {
+      const closed = ethbtcWeekly.filter(k => k.openTime < beforeMs);
+      return closed.length >= 2 ? closed[closed.length - 1].ratio : null;
+    }
+    function ethbtcPrevAt(beforeMs) {
+      const closed = ethbtcWeekly.filter(k => k.openTime < beforeMs);
+      return closed.length >= 2 ? closed[closed.length - 2].ratio : null;
+    }
+
+    // 주차 생성
+    const weeks = [];
+    let cur = new Date(period.start + "T00:00:00Z");
+    const periodEnd = new Date(period.end + "T23:59:59Z");
+    while (cur <= periodEnd) {
+      const wStart = new Date(cur), wEnd = new Date(cur);
+      wEnd.setUTCDate(wEnd.getUTCDate() + 6);
+      if (wEnd > periodEnd) wEnd.setTime(periodEnd.getTime());
+      weeks.push({ start: wStart.toISOString().slice(0, 10), end: wEnd.toISOString().slice(0, 10) });
+      cur.setUTCDate(cur.getUTCDate() + 7);
+    }
+
+    // 알트 캔들 로드
+    const klinesMap = {};
+    for (let i = 0; i < unrankedRest.length; i++) {
+      process.stdout.write(`\r  캔들 로드 중: ${i + 1}/${unrankedRest.length} (${unrankedRest[i]})          `);
+      try { klinesMap[unrankedRest[i]] = await getKlinesPaged(unrankedRest[i], period.start, period.end); } catch (_) {}
+      await sleep(300);
+    }
+    console.log(`\n`);
+
+    const W = 85;
+    console.log(`${"─".repeat(W)}`);
+    console.log(` ${"주차".padEnd(22)} ${"ETH/BTC".padStart(9)} ${"상태".padStart(5)} ${"거래".padStart(5)}   ${"익절".padStart(4)}   ${"손절".padStart(4)}   ${"승률".padStart(6)}   ${"손익".padStart(13)}`);
+    console.log(`${"─".repeat(W)}`);
+
+    let totalPnl = 0;
+    const totalTrades = [];
+    let mTrades = [], curMonth = weeks[0]?.start.slice(0, 7);
+
+    function flushEthbtcMonth(label) {
+      const tp = mTrades.filter(t => t.action === "TP").length;
+      const sl = mTrades.filter(t => t.action === "SL").length;
+      const pnl = mTrades.reduce((s, t) => s + t.pnl, 0);
+      const wr = mTrades.length ? (tp / mTrades.length * 100).toFixed(1) : "0.0";
+      const pnlStr = (pnl >= 0 ? "+" : "") + pnl.toFixed(0) + " USDT";
+      console.log(`${"─".repeat(W)}`);
+      console.log(` ${label.padEnd(22)} ${"".padStart(9)} ${"".padStart(5)} ${String(mTrades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${(wr + "%").padStart(6)}   ${pnlStr.padStart(13)}`);
+      console.log(`${"─".repeat(W)}`);
+      mTrades = [];
+    }
+
+    for (const wk of weeks) {
+      const wkMonth  = wk.start.slice(0, 7);
+      if (wkMonth !== curMonth) { flushEthbtcMonth(`[${curMonth} 합계]`); curMonth = wkMonth; }
+
+      const wkStartMs = new Date(wk.start + "T00:00:00Z").getTime();
+      const wkEndMs   = new Date(wk.end   + "T23:59:59Z").getTime();
+
+      const cur  = ethbtcAt(wkStartMs);
+      const prev = ethbtcPrevAt(wkStartMs);
+      const allowed = cur !== null && prev !== null && cur > prev;
+      const ratioStr = cur !== null ? cur.toFixed(5) : "  N/A";
+      const status   = allowed ? "매수" : "스킵";
+
+      const trades = [];
+      if (allowed) {
+        for (const sym of unrankedRest) {
+          if (!klinesMap[sym]) continue;
+          simulateSymbol(sym, klinesMap[sym], CONFIG.RSI_THRESHOLD, CONFIG.BB_FROM_LOWER, CONFIG.ORDER_USDT)
+            .filter(t => t.time >= wkStartMs && t.time <= wkEndMs)
+            .forEach(t => trades.push(t));
+        }
+      }
+      const tp  = trades.filter(t => t.action === "TP").length;
+      const sl  = trades.filter(t => t.action === "SL").length;
+      const pnl = trades.reduce((s, t) => s + t.pnl, 0);
+      const wr  = trades.length ? (tp / trades.length * 100).toFixed(1) : "-";
+      const label  = `${wk.start.slice(5)} ~ ${wk.end.slice(5)}`;
+      const pnlStr = trades.length ? (pnl >= 0 ? "+" : "") + pnl.toFixed(0) + " USDT" : "-";
+      console.log(` ${label.padEnd(22)} ${ratioStr.padStart(9)} ${status.padStart(5)} ${String(trades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${wr.padStart(6)}   ${pnlStr.padStart(13)}`);
+
+      mTrades.push(...trades);
+      totalTrades.push(...trades);
+      totalPnl += pnl;
+    }
+    flushEthbtcMonth(`[${curMonth} 합계]`);
+    {
+      const tp = totalTrades.filter(t => t.action === "TP").length;
+      const sl = totalTrades.filter(t => t.action === "SL").length;
+      const wr = totalTrades.length ? (tp / totalTrades.length * 100).toFixed(1) + "%" : "0.0%";
+      const pnlStr = (totalPnl >= 0 ? "+" : "") + totalPnl.toFixed(0) + " USDT";
+      console.log(` ${"[전체 합계]".padEnd(22)} ${"".padStart(9)} ${"".padStart(5)} ${String(totalTrades.length).padStart(5)}   ${String(tp).padStart(4)}   ${String(sl).padStart(4)}   ${wr.padStart(6)}   ${pnlStr.padStart(13)}`);
+    }
+    console.log(`${"─".repeat(W)}\n`);
+
+    // 필터 없음 비교
+    const pStartMs = new Date(period.start + "T00:00:00Z").getTime();
+    const pEndMs   = new Date(period.end   + "T23:59:59Z").getTime();
+    const noFilterTrades = [];
+    for (const sym of unrankedRest) {
+      if (!klinesMap[sym]) continue;
+      simulateSymbol(sym, klinesMap[sym], CONFIG.RSI_THRESHOLD, CONFIG.BB_FROM_LOWER, CONFIG.ORDER_USDT)
+        .filter(t => t.time >= pStartMs && t.time <= pEndMs)
+        .forEach(t => noFilterTrades.push(t));
+    }
+    console.log(` [참고] 필터 없음:`);
+    printSummary(`BIAS 0 전체`, noFilterTrades, CONFIG.ORDER_USDT);
+    console.log();
+    return;
+  }
 
   // 기간별 실행
   for (const period of PERIODS) {

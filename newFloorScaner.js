@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v44";
+const VERSION = "2026-05-05 v45";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -159,6 +159,22 @@ function calcRSI(closes, period) {
   }
   if (al === 0) return 100;
   return 100 - 100 / (1 + ag / al);
+}
+
+async function getEthWeeklyRsiSignal() {
+  try {
+    const url = `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=ETHUSDT&interval=1w&limit=20`;
+    const raw = await httpGet(url);
+    const closes = raw.map(k => parseFloat(k[4]));
+    if (closes.length < 16) return { allowed: true, curRsi: null, prevRsi: null };
+    const prevRsi = calcRSI(closes.slice(0, -1), 14);  // 직전 완성 주봉까지
+    const curRsi  = calcRSI(closes, 14);                // 현재 진행 중인 주봉 포함
+    const allowed = prevRsi !== null && curRsi !== null && curRsi > prevRsi;
+    return { allowed, curRsi, prevRsi };
+  } catch (e) {
+    console.log(`  [WARN] ETH 주봉 RSI 조회 실패: ${e.message} → 매수 허용으로 진행`);
+    return { allowed: true, curRsi: null, prevRsi: null };
+  }
 }
 
 function calcBollingerLower(closes, period = 20, mult = 2) {
@@ -411,11 +427,19 @@ async function sendTelegram(text) {
   } catch (e) { console.error("[TG] 전송 실패:", e.message); }
 }
 
-function formatMessage(results, elapsed, total) {
+function formatMessage(results, elapsed, total, ethRsiSignal) {
   const ts = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
   let msg = `🔍 <b>바닥 스캐너 ${VERSION}</b>\n`;
   msg += `🕐 ${ts}\n`;
   msg += `📊 ${total}개 스캔 · ${results.length}개 발견 · ${elapsed}초\n`;
+  if (ethRsiSignal) {
+    const rsiStr = ethRsiSignal.curRsi !== null
+      ? `${ethRsiSignal.prevRsi.toFixed(1)} → ${ethRsiSignal.curRsi.toFixed(1)}`
+      : "N/A";
+    msg += ethRsiSignal.allowed
+      ? `📈 ETH 주봉 RSI ${rsiStr} · 알트 매수 허용\n`
+      : `🚫 ETH 주봉 RSI ${rsiStr} · 알트 매수 스킵 (메이저만)\n`;
+  }
   msg += `─────────────────\n`;
 
   results.sort((a, b) => a.rsi - b.rsi);
@@ -560,11 +584,21 @@ async function main() {
       .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
     const symbols = [...tiered, ...unranked];
 
-    const total   = symbols.length;
+    const total   = scanSymbols.length;
     const results = [];
 
-    for (let i = 0; i < symbols.length; i++) {
-      const sym = symbols[i];
+    // ETH 주봉 RSI 필터 (알트 매수 허용 여부)
+    const ethRsiSignal = await getEthWeeklyRsiSignal();
+    const ethRsiLog = ethRsiSignal.curRsi !== null
+      ? `ETH 주봉 RSI ${ethRsiSignal.prevRsi.toFixed(1)} → ${ethRsiSignal.curRsi.toFixed(1)}`
+      : "ETH 주봉 RSI N/A";
+    console.log(`  [ETH RSI] ${ethRsiLog} → 알트 매수 ${ethRsiSignal.allowed ? "✅ 허용" : "🚫 스킵"}`);
+
+    // RSI 하락 중이면 메이저만 스캔
+    const scanSymbols = ethRsiSignal.allowed ? symbols : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
+
+    for (let i = 0; i < scanSymbols.length; i++) {
+      const sym = scanSymbols[i];
       try {
         const klines = await getKlines(sym);
         const isMajor = CONFIG.MAJOR_SYMBOLS.includes(sym);
@@ -615,6 +649,9 @@ async function main() {
                 } else if (stateEntry.candleTime === curCandleTime) {
                   console.log(`  [SKIP] ${sym} 동일봉 스킵`);
                   r.orderStatus = "이미 보유중 (동일봉)";
+                } else if (!ethRsiSignal.allowed) {
+                  console.log(`  [SKIP] ${sym} DCA ETH 주봉 RSI 하락 중 (${ethRsiLog})`);
+                  r.orderStatus = `DCA ETH RSI 필터 스킵 (${ethRsiLog})`;
                 } else {
                   // DCA (티어별 초기매수의 10%, 최대한도 티어별)
                   const dcaBase = isTier1 ? CONFIG.ORDER_USDT_TIER1
@@ -669,6 +706,10 @@ async function main() {
               }
               console.log(`  [BUY] ${sym} [메이저] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
               r.orderStatus = `매수 완료 [메이저] | qty: ${order.origQty} | ${usedLeverage}x`;
+            } else if (!ethRsiSignal.allowed) {
+              // ETH 주봉 RSI 하락 중 → 알트 신규 매수 스킵
+              console.log(`  [SKIP] ${sym} ETH 주봉 RSI 하락 중 (${ethRsiLog})`);
+              r.orderStatus = `ETH RSI 필터 스킵 (${ethRsiLog})`;
             } else {
               // 알트 신규 매수: Isolated 20x
               const orderAmt = isTier1 ? CONFIG.ORDER_USDT_TIER1
@@ -719,7 +760,7 @@ async function main() {
 
     if (!results.length) { process.exit(0); return; }
 
-    const msg = formatMessage(results, elapsed, total);
+    const msg = formatMessage(results, elapsed, total, ethRsiSignal);
     if (msg.length <= 4096) {
       await sendTelegram(msg);
     } else {
