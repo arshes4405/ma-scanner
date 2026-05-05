@@ -4,7 +4,7 @@
  * 실행: node promoteCoins.js
  */
 
-const VERSION = "2026-05-05 v8";
+const VERSION = "2026-05-05 v9";
 
 const fs   = require("fs");
 const path = require("path");
@@ -143,13 +143,21 @@ function main() {
     }
   }
 
-  // 블랙리스트 추가
-  if (blackList.length) {
-    const current = cfg.EXCLUDE_SYMBOLS || [];
-    const toAdd = blackList.map(r => r.sym).filter(s => !current.includes(s));
+  // 블랙리스트 추가/제거
+  {
+    const current   = cfg.EXCLUDE_SYMBOLS || [];
+    const blackSyms = new Set(blackList.map(r => r.sym));
+    const toAdd     = blackList.map(r => r.sym).filter(s => !current.includes(s));
+    // trade_log에 기록 있고 순익절 > -2로 회복된 심볼만 제거 (수동 블랙은 유지)
+    const recovered = current.filter(s => stats[s] && !blackSyms.has(s));
     if (toAdd.length) {
       console.log(`[블랙] 추가 (${toAdd.length}개): ${toAdd.join(", ")}`);
-      cfg.EXCLUDE_SYMBOLS = [...current, ...toAdd];
+    }
+    if (recovered.length) {
+      console.log(`[블랙] 해제 (${recovered.length}개): ${recovered.join(", ")}`);
+    }
+    if (toAdd.length || recovered.length) {
+      cfg.EXCLUDE_SYMBOLS = [...current.filter(s => !recovered.includes(s)), ...toAdd];
       changed = true;
     }
   }
