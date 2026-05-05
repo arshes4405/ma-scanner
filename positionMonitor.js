@@ -8,7 +8,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v5";
+const VERSION = "2026-05-05 v6";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -23,6 +23,7 @@ const CONFIG = {
   MAX_POSITIONS:      55,
   PROTECT_SYMBOLS:    ["ETHUSDT", "CLUSDT"],  // 자동매도 방지 (SL/TP/MAX_POS 전부 스킵)
   TP_STATE_FILE:      path.join(__dirname, "tp_state.json"),
+  FLOOR_STATE_FILE:   path.join(__dirname, "floor_state.json"),
   TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
 };
 
@@ -116,6 +117,18 @@ function loadTpState() {
 
 function saveTpState(state) {
   try { fs.writeFileSync(CONFIG.TP_STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
+}
+
+function loadFloorState() {
+  try {
+    if (fs.existsSync(CONFIG.FLOOR_STATE_FILE))
+      return JSON.parse(fs.readFileSync(CONFIG.FLOOR_STATE_FILE, "utf8"));
+  } catch (_) {}
+  return {};
+}
+
+function saveFloorState(state) {
+  try { fs.writeFileSync(CONFIG.FLOOR_STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
 }
 
 function logTrade(action, symbol, entryPrice, exitPrice, qty, pnlPct, pnlUsdt, orderId) {
@@ -233,6 +246,10 @@ async function checkAndClosePositions(hedgeMode) {
         const action = tpState[sym] ? "BE_CLOSE" : "SL";
         console.log(`  [SL]  ${sym} 청산 완료 orderId: ${order.orderId}`);
         logTrade(action, sym, entry, markPrice, qty, +pnlPct.toFixed(2), +(qty * (markPrice - entry)).toFixed(4), order.orderId);
+        // 12시간 재매수 쿨다운
+        const floorState = loadFloorState();
+        floorState[sym] = { slTime: Date.now() };
+        saveFloorState(floorState);
 
         await sendTelegram(
           `🛑 <b>${slLabel} 청산</b>\n` +

@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v38";
+const VERSION = "2026-05-05 v39";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -59,6 +59,7 @@ const CONFIG = {
     "PAXGUSDT",
   ],
   SL_PCT:             3,
+  SL_COOLDOWN_MS:     12 * 60 * 60 * 1000,  // SL 후 재매수 금지 (12시간)
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
 };
 
@@ -533,6 +534,19 @@ async function main() {
           try {
             const alreadyIn = await hasOpenPosition(sym, hedgeMode);
             const curCandleTime = klines[klines.length - 1].openTime;
+            const stateEntry = getStateEntry(state, sym);
+
+            // SL 쿨다운 체크 (미보유 상태에서만)
+            if (!alreadyIn && stateEntry?.slTime) {
+              const elapsed = Date.now() - stateEntry.slTime;
+              if (elapsed < CONFIG.SL_COOLDOWN_MS) {
+                const remaining = Math.ceil((CONFIG.SL_COOLDOWN_MS - elapsed) / 3600000);
+                console.log(`  [SKIP] ${sym} SL 쿨다운 중 (${remaining}시간 남음)`);
+                r.orderStatus = `SL 쿨다운 (${remaining}h 남음)`;
+                results.push(r);
+                continue;
+              }
+            }
 
             if (alreadyIn) {
               if (isMajor) {
@@ -540,7 +554,6 @@ async function main() {
                 console.log(`  [SKIP] ${sym} 이미 보유중 [메이저]`);
                 r.orderStatus = "이미 보유중";
               } else {
-                const stateEntry = getStateEntry(state, sym);
                 if (!stateEntry) {
                   console.log(`  [SKIP] ${sym} 이미 보유중 (추적 없음)`);
                   r.orderStatus = "이미 보유중";
