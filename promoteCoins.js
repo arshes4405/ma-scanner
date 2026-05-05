@@ -4,51 +4,27 @@
  * 실행: node promoteCoins.js
  */
 
-const VERSION = "2026-05-05 v7";
+const VERSION = "2026-05-05 v8";
 
 const fs   = require("fs");
 const path = require("path");
 
-const CSV_FILE     = path.join(__dirname, "trade_log.csv");
-const SCANNER_FILE = path.join(__dirname, "newFloorScaner.js");
+const CSV_FILE    = path.join(__dirname, "trade_log.csv");
+const TIER_FILE   = path.join(__dirname, "tier_config.json");
 
 const TIER_RULES = [
-  { key: "TIER1", label: "1군", min: 5 },
-  { key: "TIER2", label: "2군", min: 3 },
-  { key: "TIER3", label: "3군", min: 1 },
+  { key: "TIER1_SYMBOLS", label: "1군", min: 5 },
+  { key: "TIER2_SYMBOLS", label: "2군", min: 3 },
+  { key: "TIER3_SYMBOLS", label: "3군", min: 1 },
 ];
 
-function readTier(key) {
-  const src = fs.readFileSync(SCANNER_FILE, "utf8");
-  const m = src.match(new RegExp(`${key}_SYMBOLS:\\s*\\[([^\\]]*)\\]`));
-  if (!m) return [];
-  return m[1].match(/"([^"]+)"/g)?.map(s => s.replace(/"/g, "")) || [];
+function loadTierConfig() {
+  if (!fs.existsSync(TIER_FILE)) return { TIER1_SYMBOLS: [], TIER2_SYMBOLS: [], TIER3_SYMBOLS: [], EXCLUDE_SYMBOLS: [] };
+  return JSON.parse(fs.readFileSync(TIER_FILE, "utf8"));
 }
 
-function writeTier(key, symbols) {
-  let src = fs.readFileSync(SCANNER_FILE, "utf8");
-  const arr = symbols.length ? `["${symbols.join('", "')}"]` : `[]`;
-  src = src.replace(new RegExp(`${key}_SYMBOLS:\\s*\\[[^\\]]*\\]`), `${key}_SYMBOLS:  ${arr}`);
-  fs.writeFileSync(SCANNER_FILE, src, "utf8");
-}
-
-function readExclude() {
-  const src = fs.readFileSync(SCANNER_FILE, "utf8");
-  const m = src.match(/EXCLUDE_SYMBOLS:\s*\[([\s\S]*?)\]/);
-  if (!m) return [];
-  return m[1].match(/"([^"]+)"/g)?.map(s => s.replace(/"/g, "")) || [];
-}
-
-function addToExclude(symbols) {
-  let src = fs.readFileSync(SCANNER_FILE, "utf8");
-  const current = readExclude();
-  const toAdd = symbols.filter(s => !current.includes(s));
-  if (!toAdd.length) return 0;
-  // 마지막 항목 뒤에 추가
-  const addStr = toAdd.map(s => `"${s}"`).join(", ");
-  src = src.replace(/(EXCLUDE_SYMBOLS:\s*\[[\s\S]*?)(,?\s*\])/, `$1, ${addStr}$2`);
-  fs.writeFileSync(SCANNER_FILE, src, "utf8");
-  return toAdd.length;
+function saveTierConfig(cfg) {
+  fs.writeFileSync(TIER_FILE, JSON.stringify(cfg, null, 2), "utf8");
 }
 
 function main() {
@@ -83,7 +59,7 @@ function main() {
     else if (action === "SL") { stats[sym].sl++; systemSlSymbols.add(sym); }
   }
 
-  // 2차: MANUAL AUTO_SL — SYSTEM SL 없는 심볼만 (강제청산 등 모니터 미포착 건)
+  // 2차: MANUAL AUTO_SL — SYSTEM SL 없는 심볼만
   for (const line of lines.slice(1)) {
     const cols   = line.split(",");
     const sym    = cols[colSymbol]?.trim();
@@ -96,18 +72,18 @@ function main() {
     stats[sym].sl++;
   }
 
-  // 티어별 분류 (상위 티어 우선)
-  const tierMap = { TIER1: [], TIER2: [], TIER3: [] };
+  // 티어별 분류
+  const tierMap = { TIER1_SYMBOLS: [], TIER2_SYMBOLS: [], TIER3_SYMBOLS: [] };
   const blackList = [];
+  const warningList = [];
   const allRows = Object.entries(stats)
     .map(([sym, s]) => ({ sym, ...s, net: s.tp - s.sl, winRate: (s.tp / (s.tp + s.sl) * 100).toFixed(1) }))
     .sort((a, b) => b.net - a.net);
 
-  const warningList = [];
   for (const r of allRows) {
-    if      (r.net >= 5)  tierMap.TIER1.push(r);
-    else if (r.net >= 3)  tierMap.TIER2.push(r);
-    else if (r.net >= 1)  tierMap.TIER3.push(r);
+    if      (r.net >= 5)  tierMap.TIER1_SYMBOLS.push(r);
+    else if (r.net >= 3)  tierMap.TIER2_SYMBOLS.push(r);
+    else if (r.net >= 1)  tierMap.TIER3_SYMBOLS.push(r);
     else if (r.net <= -2) blackList.push(r);
     else if (r.sl > 0)    warningList.push(r);
   }
@@ -140,7 +116,6 @@ function main() {
     console.log();
   }
 
-  // 언랭 SL 기록
   if (warningList.length) {
     console.log(`▶ 언랭 SL 기록 (순익절 < 1) : ${warningList.length}개`);
     console.log(`  ${"─".repeat(56)}`);
@@ -151,33 +126,37 @@ function main() {
     console.log();
   }
 
-  // 파일 업데이트
+  // tier_config.json 업데이트
+  const cfg = loadTierConfig();
   let changed = false;
+
   for (const { key, label } of TIER_RULES) {
     const newList     = tierMap[key].map(r => r.sym);
-    const currentList = readTier(key);
+    const currentList = cfg[key] || [];
     const added   = newList.filter(s => !currentList.includes(s));
     const removed = currentList.filter(s => !newList.includes(s));
     if (added.length || removed.length) {
       if (added.length)   console.log(`[${label}] 추가 (${added.length}개): ${added.join(", ")}`);
       if (removed.length) console.log(`[${label}] 제거 (${removed.length}개): ${removed.join(", ")}`);
-      writeTier(key, newList);
+      cfg[key] = newList;
       changed = true;
     }
   }
 
   // 블랙리스트 추가
   if (blackList.length) {
-    const n = addToExclude(blackList.map(r => r.sym));
-    if (n > 0) {
-      console.log(`[블랙] 추가 (${n}개): ${blackList.map(r => r.sym).join(", ")}`);
+    const current = cfg.EXCLUDE_SYMBOLS || [];
+    const toAdd = blackList.map(r => r.sym).filter(s => !current.includes(s));
+    if (toAdd.length) {
+      console.log(`[블랙] 추가 (${toAdd.length}개): ${toAdd.join(", ")}`);
+      cfg.EXCLUDE_SYMBOLS = [...current, ...toAdd];
       changed = true;
     }
   }
 
   if (changed) {
-    console.log(`\n✅ newFloorScaner.js 티어 업데이트 완료`);
-    console.log(`   서버 반영: scanupdate\n`);
+    saveTierConfig(cfg);
+    console.log(`\n✅ tier_config.json 업데이트 완료`);
   } else {
     console.log("변경 없음. 티어 최신 상태입니다.");
   }

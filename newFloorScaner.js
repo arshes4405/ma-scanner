@@ -41,23 +41,13 @@ const CONFIG = {
   RSI_THRESHOLD_TIER1: 45,  BB_FROM_LOWER_TIER1: 0.25,
   RSI_THRESHOLD_TIER2: 40,  BB_FROM_LOWER_TIER2: 0.15,
   RSI_THRESHOLD_TIER3: 40,  BB_FROM_LOWER_TIER3: 0,
-  // ── 코인 그룹 ──────────────────────────────────────────────────
+  // ── 코인 그룹 (tier_config.json 에서 로드) ────────────────────
   // 메이저: Cross 50x $10,000 / RSI<45 / BB+33%
   MAJOR_SYMBOLS:  ["ETHUSDT", "HYPEUSDT"],
-  // 1군: 순익절>=5 / RSI<45 / BB+25%
   TIER1_SYMBOLS:  [],
-  // 2군: 순익절>=3 / RSI<40 / BB+15%
   TIER2_SYMBOLS:  [],
-  // 3군: 순익절>=1 / RSI<40 / BB하단
-  TIER3_SYMBOLS:  ["ZEREBROUSDT", "INITUSDT", "BULLAUSDT", "HANAUSDT", "SKYAIUSDT", "SOLVUSDT", "CLOUSDT", "PENGUUSDT", "MOODENGUSDT", "LUMIAUSDT", "PIEVERSEUSDT", "ENSOUSDT", "ONTUSDT", "SPKUSDT", "HAEDALUSDT", "BABYUSDT"],
-  // 언랭: 나머지 전체 / RSI<35 / BB하단
-  // 블랙: 제외 종목
-  EXCLUDE_SYMBOLS: [
-    "PLAYUSDT", "RAVEUSDT", "MEGAUSDT", "QNTUSDT", "XVSUSDT", "WLDUSDT", "BRUSDT", "EVAAUSDT", "ARIAUSDT", "BASEDUSDT",
-    "STXUSDT", "MANAUSDT", "COMPUSDT", "HBARUSDT", "WOOUSDT", "ICPUSDT", "ACHUSDT", "TUSDT",
-    "DUSKUSDT", "IOSTUSDT", "FLOWUSDT", "FETUSDT", "HIGHUSDT", "BELUSDT", "GTCUSDT",
-    "PAXGUSDT",
-  ],
+  TIER3_SYMBOLS:  [],
+  EXCLUDE_SYMBOLS: [],
   UNRANKED_LIMIT:     250,                   // 언랭 거래량 상위 N개만 스캔
   SL_PCT:             3,
   SL_COOLDOWN_MS:     8 * 60 * 60 * 1000,   // SL 후 재매수 금지 (8시간)
@@ -187,6 +177,20 @@ function calcBollingerThreshold(closes, period = 20, mult = 2, fromLower = 0) {
   const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
   const lower = mean - mult * std;
   return lower + (mean - lower) * fromLower;
+}
+
+// ─── 티어 설정 로드 ───────────────────────────────────────────────────────────
+function loadTierConfig() {
+  try {
+    const file = path.join(__dirname, "tier_config.json");
+    if (fs.existsSync(file)) {
+      const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (cfg.TIER1_SYMBOLS)  CONFIG.TIER1_SYMBOLS  = cfg.TIER1_SYMBOLS;
+      if (cfg.TIER2_SYMBOLS)  CONFIG.TIER2_SYMBOLS  = cfg.TIER2_SYMBOLS;
+      if (cfg.TIER3_SYMBOLS)  CONFIG.TIER3_SYMBOLS  = cfg.TIER3_SYMBOLS;
+      if (cfg.EXCLUDE_SYMBOLS) CONFIG.EXCLUDE_SYMBOLS = cfg.EXCLUDE_SYMBOLS;
+    }
+  } catch (e) { console.error("[tier_config] 로드 실패:", e.message); }
 }
 
 // ─── 쿨다운 ──────────────────────────────────────────────────────────────────
@@ -537,6 +541,7 @@ async function testBuy(symbol = "ETHUSDT") {
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
   const startTime = Date.now();
+  loadTierConfig();
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작 (${VERSION})`);
 
   const state = loadState();

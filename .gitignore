@@ -9,3 +9,10 @@
 
 # Node
 node_modules/
+
+# 서버 전용 데이터 (git 관리 제외)
+tier_config.json
+trade_log.csv
+tp_state.json
+floor_state.json
+weekly/
