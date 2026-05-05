@@ -4,7 +4,7 @@
  * 실행: node promoteCoins.js
  */
 
-const VERSION = "2026-05-05 v9";
+const VERSION = "2026-05-05 v10";
 
 const fs   = require("fs");
 const path = require("path");
@@ -19,8 +19,11 @@ const TIER_RULES = [
 ];
 
 function loadTierConfig() {
-  if (!fs.existsSync(TIER_FILE)) return { TIER1_SYMBOLS: [], TIER2_SYMBOLS: [], TIER3_SYMBOLS: [], EXCLUDE_SYMBOLS: [] };
-  return JSON.parse(fs.readFileSync(TIER_FILE, "utf8"));
+  if (!fs.existsSync(TIER_FILE)) return { TIER1_SYMBOLS: [], TIER2_SYMBOLS: [], TIER3_SYMBOLS: [], EXCLUDE_SYMBOLS: [], MANUAL_EXCLUDE_SYMBOLS: [] };
+  const cfg = JSON.parse(fs.readFileSync(TIER_FILE, "utf8"));
+  if (!cfg.MANUAL_EXCLUDE_SYMBOLS) cfg.MANUAL_EXCLUDE_SYMBOLS = [];
+  if (!cfg.EXCLUDE_SYMBOLS) cfg.EXCLUDE_SYMBOLS = [];
+  return cfg;
 }
 
 function saveTierConfig(cfg) {

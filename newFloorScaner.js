@@ -203,7 +203,10 @@ function loadTierConfig() {
       if (cfg.TIER1_SYMBOLS)  CONFIG.TIER1_SYMBOLS  = cfg.TIER1_SYMBOLS;
       if (cfg.TIER2_SYMBOLS)  CONFIG.TIER2_SYMBOLS  = cfg.TIER2_SYMBOLS;
       if (cfg.TIER3_SYMBOLS)  CONFIG.TIER3_SYMBOLS  = cfg.TIER3_SYMBOLS;
-      if (cfg.EXCLUDE_SYMBOLS) CONFIG.EXCLUDE_SYMBOLS = cfg.EXCLUDE_SYMBOLS;
+      // 자동 블랙 + 수동 블랙 합산
+      const autoEx   = cfg.EXCLUDE_SYMBOLS        || [];
+      const manualEx = cfg.MANUAL_EXCLUDE_SYMBOLS || [];
+      CONFIG.EXCLUDE_SYMBOLS = [...new Set([...autoEx, ...manualEx])];
     }
   } catch (e) { console.error("[tier_config] 로드 실패:", e.message); }
 }
