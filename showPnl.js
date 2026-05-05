@@ -52,7 +52,11 @@ async function main() {
     return;
   }
 
-  positions.sort((a, b) => parseFloat(b.unRealizedProfit) - parseFloat(a.unRealizedProfit));
+  positions.sort((a, b) => {
+    const pctA = (parseFloat(a.markPrice) - parseFloat(a.entryPrice)) / parseFloat(a.entryPrice);
+    const pctB = (parseFloat(b.markPrice) - parseFloat(b.entryPrice)) / parseFloat(b.entryPrice);
+    return pctB - pctA;
+  });
 
   let totalPnl = 0;
   let totalWin = 0, totalLose = 0;
