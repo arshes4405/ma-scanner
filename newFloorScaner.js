@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v45";
+const VERSION = "2026-05-05 v46";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -159,6 +159,48 @@ function calcRSI(closes, period) {
   }
   if (al === 0) return 100;
   return 100 - 100 / (1 + ag / al);
+}
+
+function loadTpState() {
+  try {
+    const file = path.join(__dirname, "tp_state.json");
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (_) {}
+  return {};
+}
+
+function calcBBPosition(closes) {
+  if (closes.length < 20) return null;
+  const s = closes.slice(-20);
+  const mean = s.reduce((a, b) => a + b, 0) / 20;
+  const std  = Math.sqrt(s.reduce((a, b) => a + (b - mean) ** 2, 0) / 20);
+  const upper = mean + 2 * std;
+  const lower = mean - 2 * std;
+  const cur = closes[closes.length - 1];
+  return { pct: (cur - lower) / (upper - lower) * 100, upper, lower, mean };
+}
+
+async function checkMtfBB(symbols) {
+  const results = [];
+  for (const sym of symbols) {
+    try {
+      const [raw1h, raw4h] = await Promise.all([
+        httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${sym}&interval=1h&limit=50`),
+        httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${sym}&interval=4h&limit=50`),
+      ]);
+      const bb1h = calcBBPosition(raw1h.map(k => parseFloat(k[4])));
+      const bb4h = calcBBPosition(raw4h.map(k => parseFloat(k[4])));
+      if (!bb1h || !bb4h) continue;
+
+      let signal = null;
+      if (bb1h.pct > 100 && bb4h.pct > 80)      signal = "🔴 청산 추천 (1h+4h 과열)";
+      else if (bb1h.pct > 100)                   signal = "🟡 단기 과열 (1h 이탈, 4h 여유)";
+      else if (bb4h.pct > 100)                   signal = "🟠 중기 주의 (4h 이탈)";
+
+      if (signal) results.push({ sym, bb1h: bb1h.pct, bb4h: bb4h.pct, signal });
+    } catch (_) {}
+  }
+  return results;
 }
 
 async function getEthWeeklyRsiSignal() {
@@ -572,6 +614,7 @@ async function main() {
 
   const state = loadState();
   const slCooldownMap = loadSlCooldownMap();
+  const tpState = loadTpState();
 
   try {
     const hedgeMode = await getIsHedgeMode();
@@ -760,6 +803,21 @@ async function main() {
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n완료: ${results.length}개 발견 (${elapsed}초)`);
+
+    // 반익 포지션 MTF BB 체크
+    const tpSymbols = Object.keys(tpState);
+    if (tpSymbols.length) {
+      const mtfResults = await checkMtfBB(tpSymbols);
+      if (mtfResults.length) {
+        let mtfMsg = `\n📊 <b>반익 포지션 MTF BB 알림</b>\n─────────────────\n`;
+        for (const r of mtfResults) {
+          mtfMsg += `${r.signal}\n`;
+          mtfMsg += `  <b>${r.sym}</b>  1h: ${r.bb1h.toFixed(0)}%  4h: ${r.bb4h.toFixed(0)}%\n`;
+        }
+        await sendTelegram(mtfMsg);
+        console.log(`[MTF BB] ${mtfResults.length}개 알림 발송`);
+      }
+    }
 
     if (!results.length) { process.exit(0); return; }
 
