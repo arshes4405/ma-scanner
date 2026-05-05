@@ -412,7 +412,7 @@ function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD, bbFromLowe
     price:    cur.close,
     rsi:      +rsi.toFixed(1),
     curRsi:   +curRsi.toFixed(1),
-    curRsiMax,
+    curRsiMax: +curRsiMax.toFixed(2),
     bbLower:  +bbThreshold.toFixed(4),
   };
 }
