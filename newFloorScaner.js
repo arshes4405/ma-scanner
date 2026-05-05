@@ -584,7 +584,6 @@ async function main() {
       .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
     const symbols = [...tiered, ...unranked];
 
-    const total   = scanSymbols.length;
     const results = [];
 
     // ETH 주봉 RSI 필터 (알트 매수 허용 여부)
@@ -596,6 +595,7 @@ async function main() {
 
     // RSI 하락 중이면 메이저만 스캔
     const scanSymbols = ethRsiSignal.allowed ? symbols : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
+    const total = scanSymbols.length;
 
     for (let i = 0; i < scanSymbols.length; i++) {
       const sym = scanSymbols[i];
