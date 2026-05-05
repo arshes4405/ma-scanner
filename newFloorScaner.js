@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v43";
+const VERSION = "2026-05-05 v44";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -48,7 +48,6 @@ const CONFIG = {
   TIER2_SYMBOLS:  [],
   TIER3_SYMBOLS:  [],
   EXCLUDE_SYMBOLS: [],
-  UNRANKED_LIMIT:     250,                   // 언랭 거래량 상위 N개만 스캔
   SL_PCT:             3,
   SL_COOLDOWN_MS:     8 * 60 * 60 * 1000,   // SL 후 재매수 금지 (8시간)
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
@@ -558,9 +557,7 @@ async function main() {
     const tiered  = allSymbols.filter(s => tieredSet.has(s) && !CONFIG.EXCLUDE_SYMBOLS.includes(s));
     const unranked = allSymbols
       .filter(s => !tieredSet.has(s) && !CONFIG.EXCLUDE_SYMBOLS.includes(s))
-      .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT)
-      .sort((a, b) => (volMap[b] || 0) - (volMap[a] || 0))
-      .slice(0, CONFIG.UNRANKED_LIMIT);
+      .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
     const symbols = [...tiered, ...unranked];
 
     const total   = symbols.length;
