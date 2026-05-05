@@ -30,13 +30,25 @@ function httpGetAuth(url) {
 }
 
 async function main() {
-  const qs    = `timestamp=${Date.now()}`;
-  const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
+  const qs1 = `timestamp=${Date.now()}`;
+  const qs2 = `timestamp=${Date.now()}`;
+  const [pRisk, account] = await Promise.all([
+    httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs1}&signature=${sign(qs1)}`),
+    httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/account?${qs2}&signature=${sign(qs2)}`),
+  ]);
 
   const positions = pRisk.filter(p => Math.abs(parseFloat(p.positionAmt)) > 0);
 
   if (!positions.length) {
     console.log("보유 포지션 없음");
+    const wallet    = parseFloat(account.totalWalletBalance);
+    const margin    = parseFloat(account.totalMarginBalance);
+    const available = parseFloat(account.availableBalance);
+    const used      = parseFloat(account.totalInitialMargin);
+    console.log(`${"─".repeat(50)}`);
+    console.log(` 지갑 잔고:  $${wallet.toFixed(2)}  |  총 자산: $${margin.toFixed(2)}`);
+    console.log(` 사용 가능:  $${available.toFixed(2)}  |  사용 중: $${used.toFixed(2)}`);
+    console.log(`${"─".repeat(50)}`);
     return;
   }
 
@@ -72,6 +84,14 @@ async function main() {
   console.log(`${"─".repeat(82)}`);
   console.log(` 총 ${positions.length}개  수익 ${totalWin}개  손실 ${totalLose}개  총매수금: $${totalBought.toLocaleString()}`);
   console.log(` 미실현 총손익: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USDT`);
+  console.log(`${"─".repeat(82)}`);
+
+  const wallet    = parseFloat(account.totalWalletBalance);
+  const margin    = parseFloat(account.totalMarginBalance);
+  const available = parseFloat(account.availableBalance);
+  const used      = parseFloat(account.totalInitialMargin);
+  console.log(` 지갑 잔고:  $${wallet.toFixed(2)}  |  총 자산(+미실현): $${margin.toFixed(2)}`);
+  console.log(` 사용 가능:  $${available.toFixed(2)}  |  사용 중(마진):    $${used.toFixed(2)}`);
   console.log(`${"─".repeat(82)}\n`);
 }
 

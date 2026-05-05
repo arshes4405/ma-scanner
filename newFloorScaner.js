@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v39";
+const VERSION = "2026-05-05 v43";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -58,9 +58,11 @@ const CONFIG = {
     "DUSKUSDT", "IOSTUSDT", "FLOWUSDT", "FETUSDT", "HIGHUSDT", "BELUSDT", "GTCUSDT",
     "PAXGUSDT",
   ],
+  UNRANKED_LIMIT:     250,                   // 언랭 거래량 상위 N개만 스캔
   SL_PCT:             3,
-  SL_COOLDOWN_MS:     12 * 60 * 60 * 1000,  // SL 후 재매수 금지 (12시간)
+  SL_COOLDOWN_MS:     8 * 60 * 60 * 1000,   // SL 후 재매수 금지 (8시간)
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
+  TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
 };
 
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -217,6 +219,48 @@ function updateState(state, sym, candleTime, invested) {
     if (entry && now - entry.time > 24 * 60 * 60 * 1000) delete state[k];
   }
   return state;
+}
+
+// ─── SL 쿨다운 맵 (CSV 기반) ──────────────────────────────────────────────────
+function parseCsvDatetime(str) {
+  if (!str) return 0;
+  // "2026. 5. 5. AM 5:34:56" 또는 "2026. 5. 5. 오전 5:34:56"
+  const m = str.match(/(\d{4})\.\s*(\d+)\.\s*(\d+)\.\s*(AM|PM|오전|오후)\s*(\d+):(\d{2}):(\d{2})/);
+  if (!m) return 0;
+  const [, yyyy, mo, dd, ampm, h, mm, ss] = m;
+  let hour = parseInt(h);
+  if ((ampm === "PM" || ampm === "오후") && hour !== 12) hour += 12;
+  if ((ampm === "AM" || ampm === "오전") && hour === 12) hour = 0;
+  return Date.UTC(+yyyy, +mo - 1, +dd, hour - 9, +mm, +ss); // KST → UTC
+}
+
+function loadSlCooldownMap() {
+  const map = {};
+  if (!fs.existsSync(CONFIG.TRADE_LOG_FILE)) return map;
+  try {
+    const lines = fs.readFileSync(CONFIG.TRADE_LOG_FILE, "utf8").trim().split("\n");
+    const hdr = lines[0].split(",");
+    const ci = { sym: hdr.indexOf("symbol"), action: hdr.indexOf("action"),
+                 source: hdr.indexOf("source"), date: hdr.indexOf("datetime"),
+                 oid: hdr.indexOf("order_id") };
+    for (const line of lines.slice(1)) {
+      const c = line.split(",");
+      const sym    = c[ci.sym]?.trim();
+      const action = c[ci.action]?.trim();
+      if (!sym || (action !== "SL" && action !== "AUTO_SL")) continue;
+      let ts = 0;
+      const oid = c[ci.oid]?.trim();
+      if (c[ci.source]?.trim() === "MANUAL" && oid?.includes("_")) {
+        // SYMBOL_SEC 포맷: ATUSDT_1746403354
+        const sec = parseInt(oid.split("_").pop());
+        if (!isNaN(sec)) ts = sec * 1000;
+      } else {
+        ts = parseCsvDatetime(c[ci.date]?.trim());
+      }
+      if (ts > 0 && ts > (map[sym] || 0)) map[sym] = ts;
+    }
+  } catch (_) {}
+  return map;
 }
 
 // ─── API (Public) ─────────────────────────────────────────────────────────────
@@ -496,14 +540,23 @@ async function main() {
   console.log(`[${new Date().toLocaleString("ko-KR")}] 바닥 스캐너 시작 (${VERSION})`);
 
   const state = loadState();
+  const slCooldownMap = loadSlCooldownMap();
 
   try {
     const hedgeMode = await getIsHedgeMode();
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const { volMap, priceMap } = await getVolumes();
-    const symbols = allSymbols
+    const tieredSet = new Set([
+      ...CONFIG.MAJOR_SYMBOLS, ...CONFIG.TIER1_SYMBOLS,
+      ...CONFIG.TIER2_SYMBOLS, ...CONFIG.TIER3_SYMBOLS,
+    ]);
+    const tiered  = allSymbols.filter(s => tieredSet.has(s) && !CONFIG.EXCLUDE_SYMBOLS.includes(s));
+    const unranked = allSymbols
+      .filter(s => !tieredSet.has(s) && !CONFIG.EXCLUDE_SYMBOLS.includes(s))
       .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT)
-      .filter(s => !CONFIG.EXCLUDE_SYMBOLS.includes(s));
+      .sort((a, b) => (volMap[b] || 0) - (volMap[a] || 0))
+      .slice(0, CONFIG.UNRANKED_LIMIT);
+    const symbols = [...tiered, ...unranked];
 
     const total   = symbols.length;
     const results = [];
@@ -536,9 +589,9 @@ async function main() {
             const curCandleTime = klines[klines.length - 1].openTime;
             const stateEntry = getStateEntry(state, sym);
 
-            // SL 쿨다운 체크 (미보유 상태에서만)
-            if (!alreadyIn && stateEntry?.slTime) {
-              const elapsed = Date.now() - stateEntry.slTime;
+            // SL 쿨다운 체크 (CSV 기반, 미보유 + 알트만)
+            if (!alreadyIn && !isMajor && slCooldownMap[sym]) {
+              const elapsed = Date.now() - slCooldownMap[sym];
               if (elapsed < CONFIG.SL_COOLDOWN_MS) {
                 const remaining = Math.ceil((CONFIG.SL_COOLDOWN_MS - elapsed) / 3600000);
                 console.log(`  [SKIP] ${sym} SL 쿨다운 중 (${remaining}시간 남음)`);

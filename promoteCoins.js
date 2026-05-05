@@ -114,15 +114,17 @@ function main() {
 
   // 결과 출력
   console.log(`\n[promoteCoins ${VERSION}] trade_log.csv 분석 완료 (TP_HALF/SL 기준)`);
+  console.log(`▶ 블랙 (순익절 <= -2) : ${blackList.length}개`);
   if (blackList.length) {
-    console.log(`▶ 블랙 (순익절 <= -2) : ${blackList.length}개`);
     console.log(`  ${"─".repeat(56)}`);
     console.log(`  ${"심볼".padEnd(14)} ${"익절".padStart(4)} ${"손절".padStart(4)} ${"순익절".padStart(5)} ${"승률".padStart(6)}`);
     console.log(`  ${"─".repeat(56)}`);
     for (const r of blackList)
       console.log(`  ${r.sym.padEnd(14)} ${String(r.tp).padStart(4)} ${String(r.sl).padStart(4)} ${String(r.net).padStart(5)} ${((r.tp + r.sl) > 0 ? r.winRate + "%" : "-").padStart(6)}`);
-    console.log();
+  } else {
+    console.log(`  없음`);
   }
+  console.log();
   console.log(`총 ${Object.keys(stats).length}개 종목\n`);
 
   for (const { key, label, min } of TIER_RULES) {
