@@ -52,42 +52,50 @@ async function main() {
     return;
   }
 
-  positions.sort((a, b) => {
-    const pctA = (parseFloat(a.markPrice) - parseFloat(a.entryPrice)) / parseFloat(a.entryPrice);
-    const pctB = (parseFloat(b.markPrice) - parseFloat(b.entryPrice)) / parseFloat(b.entryPrice);
-    return pctB - pctA;
-  });
-
-  let totalPnl = 0;
-  let totalWin = 0, totalLose = 0;
-
-  console.log(`\n${"─".repeat(82)}`);
-  console.log(` ${"심볼".padEnd(14)} ${"매수금".padStart(8)} ${"진입가".padStart(12)} ${"현재가".padStart(12)} ${"수익률".padStart(8)} ${"미실현손익".padStart(12)}`);
-  console.log(`${"─".repeat(82)}`);
-
-  let totalBought = 0;
-  for (const p of positions) {
-    const entry   = parseFloat(p.entryPrice);
-    const mark    = parseFloat(p.markPrice);
-    const qty     = Math.abs(parseFloat(p.positionAmt));
-    const pnl     = parseFloat(p.unRealizedProfit);
-    const pnlPct  = ((mark - entry) / entry * 100);
-    const bought  = Math.round(qty * entry);
-
-    totalPnl    += pnl;
-    totalBought += bought;
-    if (pnl >= 0) totalWin++; else totalLose++;
-
-    const pnlStr    = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
-    const pctStr    = `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`;
-    const boughtStr = `$${bought}`;
-
-    console.log(` ${p.symbol.padEnd(14)} ${boughtStr.padStart(8)} ${entry.toPrecision(6).padStart(12)} ${mark.toPrecision(6).padStart(12)} ${pctStr.padStart(8)} ${pnlStr.padStart(12)} USDT`);
+  function sortByPct(list) {
+    return list.sort((a, b) => {
+      const pctA = (parseFloat(a.markPrice) - parseFloat(a.entryPrice)) / parseFloat(a.entryPrice);
+      const pctB = (parseFloat(b.markPrice) - parseFloat(b.entryPrice)) / parseFloat(b.entryPrice);
+      return pctB - pctA;
+    });
   }
 
+  const longs  = sortByPct(positions.filter(p => parseFloat(p.positionAmt) > 0));
+  const shorts = sortByPct(positions.filter(p => parseFloat(p.positionAmt) < 0));
+
+  function printGroup(label, group) {
+    if (!group.length) return 0;
+    let groupPnl = 0, groupBought = 0, win = 0, lose = 0;
+    console.log(`\n${"─".repeat(82)}`);
+    console.log(` ▶ ${label} (${group.length}개)`);
+    console.log(`${"─".repeat(82)}`);
+    console.log(` ${"심볼".padEnd(14)} ${"매수금".padStart(8)} ${"진입가".padStart(12)} ${"현재가".padStart(12)} ${"수익률".padStart(8)} ${"미실현손익".padStart(12)}`);
+    console.log(`${"─".repeat(82)}`);
+    for (const p of group) {
+      const entry  = parseFloat(p.entryPrice);
+      const mark   = parseFloat(p.markPrice);
+      const qty    = Math.abs(parseFloat(p.positionAmt));
+      const pnl    = parseFloat(p.unRealizedProfit);
+      const pnlPct = (parseFloat(p.positionAmt) > 0 ? 1 : -1) * (mark - entry) / entry * 100;
+      const bought = Math.round(qty * entry);
+      groupPnl += pnl; groupBought += bought;
+      if (pnl >= 0) win++; else lose++;
+      const pnlStr = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
+      const pctStr = `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`;
+      console.log(` ${p.symbol.padEnd(14)} ${"$"+bought.padStart(7)} ${entry.toPrecision(6).padStart(12)} ${mark.toPrecision(6).padStart(12)} ${pctStr.padStart(8)} ${pnlStr.padStart(12)} USDT`);
+    }
+    console.log(`${"─".repeat(82)}`);
+    console.log(` 수익 ${win}개  손실 ${lose}개  매수금: $${groupBought.toLocaleString()}  손익: ${groupPnl >= 0 ? "+" : ""}${groupPnl.toFixed(2)} USDT`);
+    return groupPnl;
+  }
+
+  const longPnl  = printGroup("롱", longs);
+  const shortPnl = printGroup("숏", shorts);
+  const totalPnl = longPnl + shortPnl;
+  const totalBought = [...longs, ...shorts].reduce((s, p) => s + Math.round(Math.abs(parseFloat(p.positionAmt)) * parseFloat(p.entryPrice)), 0);
+
   console.log(`${"─".repeat(82)}`);
-  console.log(` 총 ${positions.length}개  수익 ${totalWin}개  손실 ${totalLose}개  총매수금: $${totalBought.toLocaleString()}`);
-  console.log(` 미실현 총손익: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USDT`);
+  console.log(` 전체 ${positions.length}개  총매수금: $${totalBought.toLocaleString()}  미실현 총손익: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USDT`);
   console.log(`${"─".repeat(82)}`);
 
   const wallet    = parseFloat(account.totalWalletBalance);
