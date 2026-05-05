@@ -82,7 +82,7 @@ async function main() {
       if (pnl >= 0) win++; else lose++;
       const pnlStr = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
       const pctStr = `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`;
-      console.log(` ${p.symbol.padEnd(14)} ${"$"+bought.padStart(7)} ${entry.toPrecision(6).padStart(12)} ${mark.toPrecision(6).padStart(12)} ${pctStr.padStart(8)} ${pnlStr.padStart(12)} USDT`);
+      console.log(` ${p.symbol.padEnd(14)} ${("$"+bought).padStart(8)} ${entry.toPrecision(6).padStart(12)} ${mark.toPrecision(6).padStart(12)} ${pctStr.padStart(8)} ${pnlStr.padStart(12)} USDT`);
     }
     console.log(`${"─".repeat(82)}`);
     console.log(` 수익 ${win}개  손실 ${lose}개  매수금: $${groupBought.toLocaleString()}  손익: ${groupPnl >= 0 ? "+" : ""}${groupPnl.toFixed(2)} USDT`);
