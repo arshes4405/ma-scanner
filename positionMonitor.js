@@ -8,7 +8,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v6";
+const VERSION = "2026-05-05 v7";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -267,11 +267,32 @@ async function checkAndClosePositions(hedgeMode) {
   saveTpState(tpState);
 }
 
+// ─── 강제청산 감지 ────────────────────────────────────────────────────────────
+async function checkLiquidations() {
+  const startTime = Date.now() - 2 * 60 * 1000;  // 최근 2분
+  const qs   = `incomeType=LIQUIDATION&startTime=${startTime}&limit=50&timestamp=${Date.now()}`;
+  const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v1/income?${qs}&signature=${sign(qs)}`);
+  if (!data.length) return;
+
+  const floorState = loadFloorState();
+  let changed = false;
+  for (const item of data) {
+    const sym = item.symbol;
+    if (CONFIG.PROTECT_SYMBOLS.includes(sym)) continue;
+    console.log(`  [LIQ] ${sym} 강제청산 감지 → 12시간 쿨다운`);
+    floorState[sym] = { slTime: item.time };
+    changed = true;
+    await sendTelegram(`⚡ <b>강제청산 감지</b> <b>${sym}</b>\n  12시간 재매수 쿨다운 적용`);
+  }
+  if (changed) saveFloorState(floorState);
+}
+
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`[${new Date().toLocaleString("ko-KR")}] 포지션 모니터 시작 (${VERSION})`);
   try {
     const hedgeMode = await getIsHedgeMode();
+    await checkLiquidations();
     await checkAndClosePositions(hedgeMode);
   } catch (e) {
     console.error("에러:", e.message);
