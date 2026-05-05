@@ -192,12 +192,7 @@ async function checkMtfBB(symbols) {
       const bb4h = calcBBPosition(raw4h.map(k => parseFloat(k[4])));
       if (!bb1h || !bb4h) continue;
 
-      let signal = null;
-      if (bb1h.pct > 100 && bb4h.pct > 80)      signal = "🔴 청산 추천 (1h+4h 과열)";
-      else if (bb1h.pct > 100)                   signal = "🟡 단기 과열 (1h 이탈, 4h 여유)";
-      else if (bb4h.pct > 100)                   signal = "🟠 중기 주의 (4h 이탈)";
-
-      if (signal) results.push({ sym, bb1h: bb1h.pct, bb4h: bb4h.pct, signal });
+      results.push({ sym, bb1h: bb1h.pct, bb4h: bb4h.pct });
     } catch (_) {}
   }
   return results;
@@ -809,13 +804,13 @@ async function main() {
     if (tpSymbols.length) {
       const mtfResults = await checkMtfBB(tpSymbols);
       if (mtfResults.length) {
-        let mtfMsg = `\n📊 <b>반익 포지션 MTF BB 알림</b>\n─────────────────\n`;
+        let mtfMsg = `📊 <b>반익 포지션 MTF BB</b>\n─────────────────\n`;
         for (const r of mtfResults) {
-          mtfMsg += `${r.signal}\n`;
-          mtfMsg += `  <b>${r.sym}</b>  1h: ${r.bb1h.toFixed(0)}%  4h: ${r.bb4h.toFixed(0)}%\n`;
+          const icon = r.bb1h > 100 && r.bb4h > 80 ? "🔴" : r.bb1h > 100 ? "🟡" : r.bb4h > 100 ? "🟠" : "🟢";
+          mtfMsg += `${icon} <b>${r.sym}</b>  1h: ${r.bb1h.toFixed(0)}%  4h: ${r.bb4h.toFixed(0)}%\n`;
         }
         await sendTelegram(mtfMsg);
-        console.log(`[MTF BB] ${mtfResults.length}개 알림 발송`);
+        console.log(`[MTF BB] ${mtfResults.length}개 발송`);
       }
     }
 
