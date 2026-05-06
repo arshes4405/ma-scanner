@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-06 v47";
+const VERSION = "2026-05-07 v48";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -464,11 +464,18 @@ function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD, bbFromLowe
 // ─── 텔레그램 ─────────────────────────────────────────────────────────────────
 async function sendTelegram(text) {
   try {
-    await httpsPost("api.telegram.org",
+    const res = await httpsPost("api.telegram.org",
       `/bot${CONFIG.TG_TOKEN}/sendMessage`,
       { chat_id: CONFIG.TG_CHAT_ID, text, parse_mode: "HTML", disable_web_page_preview: true }
     );
-  } catch (e) { console.error("[TG] 전송 실패:", e.message); }
+    if (!res.ok) {
+      console.error(`[TG] 전송 실패 (API): error_code=${res.error_code} description=${res.description}`);
+      console.error(`[TG] 전송 텍스트 앞 200자: ${text.slice(0, 200)}`);
+    }
+  } catch (e) {
+    console.error(`[TG] 전송 실패 (예외): ${e.constructor.name}: ${e.message}`);
+    console.error(e.stack);
+  }
 }
 
 function formatMessage(results, elapsed, total, ethRsiSignal) {
