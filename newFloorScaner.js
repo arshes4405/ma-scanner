@@ -1,7 +1,7 @@
 /**
  * Binance Futures 바닥 스캐너 + 자동매수
- * 조건: MA 역배열 + 직전봉 RSI<30 + 직전봉 BB하단 이탈 + 현재봉 양봉 + 거래량 돌파
- * 자동매수: 조건 충족 + 미보유 시 20배 레버리지 $100 notional 매수 + -3% 스탑로스
+ * 조건: 직전봉 음봉(하락<4%) + RSI 조건 + BB하단 이탈 + 현재봉 양봉 + 거래량 돌파
+ * 자동매수: 조건 충족 + 미보유 시 30배 레버리지 Isolated 매수 + -3% 스탑로스
  */
 
 const https  = require("https");
@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-05 v46";
+const VERSION = "2026-05-06 v47";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -424,6 +424,10 @@ function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD, bbFromLowe
 
   // 직전봉 음봉
   if (prev.close >= prev.open) return null;
+
+  // 직전봉 하락폭 4% 이상이면 스킵 (급락봉 진입 방지)
+  const prevDropPct = (prev.open - prev.close) / prev.open * 100;
+  if (prevDropPct >= 4) return null;
 
   const prevCloses = closes.slice(0, -1);
 
