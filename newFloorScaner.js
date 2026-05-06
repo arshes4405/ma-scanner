@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-07 v49";
+const VERSION = "2026-05-07 v50";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -118,7 +118,7 @@ function httpsPost(hostname, path, body) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const req = https.request(
-      { hostname, path, method: "POST",
+      { hostname, path, method: "POST", family: 4,
         headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
       (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => resolve(JSON.parse(d))); }
     );
