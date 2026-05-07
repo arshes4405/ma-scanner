@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-07 v50";
+const VERSION = "2026-05-07 v51";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -818,10 +818,27 @@ async function main() {
     if (tpSymbols.length) {
       const mtfResults = await checkMtfBB(tpSymbols);
       if (mtfResults.length) {
+        // 포지션 수익률 조회
+        const pnlMap = {};
+        try {
+          const qs = `timestamp=${Date.now()}`;
+          const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
+          for (const p of pRisk) {
+            const amt = parseFloat(p.positionAmt);
+            if (Math.abs(amt) > 0) {
+              const entry = parseFloat(p.entryPrice);
+              const mark  = parseFloat(p.markPrice);
+              pnlMap[p.symbol] = (amt > 0 ? 1 : -1) * (mark - entry) / entry * 100;
+            }
+          }
+        } catch (_) {}
+
         let mtfMsg = `📊 <b>반익 포지션 MTF BB</b>\n─────────────────\n`;
         for (const r of mtfResults) {
-          const icon = r.bb1h > 100 && r.bb4h > 80 ? "🔴" : r.bb1h > 100 ? "🟡" : r.bb4h > 100 ? "🟠" : "🟢";
-          mtfMsg += `${icon} <b>${r.sym}</b>  1h: ${r.bb1h.toFixed(0)}%  4h: ${r.bb4h.toFixed(0)}%\n`;
+          const icon   = r.bb1h > 100 && r.bb4h > 80 ? "🔴" : r.bb1h > 100 ? "🟡" : r.bb4h > 100 ? "🟠" : "🟢";
+          const pnl    = pnlMap[r.sym];
+          const pnlStr = pnl !== undefined ? `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%` : "N/A";
+          mtfMsg += `${icon} <b>${r.sym}</b>  ${pnlStr}\n`;
         }
         await sendTelegram(mtfMsg);
         console.log(`[MTF BB] ${mtfResults.length}개 발송`);
