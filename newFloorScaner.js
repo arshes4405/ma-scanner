@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-15 v56";
+const VERSION = "2026-05-15 v57";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -821,10 +821,10 @@ async function main() {
     }
 
     // ─── 1시간봉 ESI 스캔 ────────────────────────────────────────────────────
-    // ESI 상태별 스캔 범위 (v51 원래 로직)
-    const scanSymbols = ethRsiSignal.state === "purge" ? [] :
-                        ethRsiSignal.allowed ? symbols :
-                        symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
+    // ESI 상태별 스캔 범위: 허용=전체, 불허=메이저만 (메이저는 항상 스캔)
+    const scanSymbols = ethRsiSignal.allowed
+                        ? symbols
+                        : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
     const total = scanSymbols.length;
 
     for (let i = 0; i < scanSymbols.length; i++) {
