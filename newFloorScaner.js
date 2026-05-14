@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-15 v53";
+const VERSION = "2026-05-15 v54";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -665,12 +665,21 @@ async function main() {
       updatedAt: Date.now(),
     }), "utf8");
 
-    // ESI 상태별 스캔 범위: normal/caution=전체, skip=메이저+1티어, purge=메이저만
-    const scanSymbols = ethRsiSignal.allowed
-                        ? symbols
-                        : ethRsiSignal.state === "purge"
-                          ? symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s))
-                          : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s) || CONFIG.TIER1_SYMBOLS.includes(s));
+    // 일봉 BB 사전 체크 (메이저+1티어, ESI 무관하게 항상 수행)
+    const dailyBBSet = new Set();
+    for (const sym of [...CONFIG.MAJOR_SYMBOLS, ...CONFIG.TIER1_SYMBOLS].filter(s => symbols.includes(s))) {
+      const lower = await getDailyBBLower(sym);
+      if (lower !== null && (priceMap[sym] || 0) < lower) {
+        dailyBBSet.add(sym);
+        console.log(`  [일봉BB] ${sym} 하단 이탈 (현재가: ${priceMap[sym]}, BB하단: ${lower.toFixed(4)})`);
+      }
+    }
+
+    // ESI 상태별 스캔 범위 (기존 로직 유지) + 일봉BB 이탈 종목은 ESI 무관하게 추가
+    const esiSymbols = ethRsiSignal.state === "purge" ? [] :
+                       ethRsiSignal.allowed ? symbols :
+                       symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
+    const scanSymbols = [...new Set([...esiSymbols, ...dailyBBSet])];
     const total = scanSymbols.length;
 
     for (let i = 0; i < scanSymbols.length; i++) {
@@ -696,16 +705,8 @@ async function main() {
           r.vol = volMap[sym] || 0;
           r.isMajor = isMajor;
 
-          // 일봉 BB 하단 이탈 체크 (메이저/1티어 ESI 우회 조건)
-          let belowDailyBB = false;
-          if (isMajor || isTier1) {
-            const dailyBBLower = await getDailyBBLower(sym);
-            if (dailyBBLower !== null && r.price < dailyBBLower) {
-              belowDailyBB = true;
-              r.belowDailyBB = true;
-              console.log(`  [INFO] ${sym} 일봉 BB 하단 이탈 (현재가: ${r.price}, 일봉BB하단: ${dailyBBLower.toFixed(4)})`);
-            }
-          }
+          const belowDailyBB = dailyBBSet.has(sym);
+          if (belowDailyBB) r.belowDailyBB = true;
 
           try {
             const posInfo   = await getOpenPosition(sym, hedgeMode);
