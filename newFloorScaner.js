@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-07 v51";
+const VERSION = "2026-05-15 v52";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -26,32 +26,34 @@ const CONFIG = {
   MARKET_BIAS:        0,   // 상승장 +5 / 하락장 -5 / 중립 0
   ORDER_USDT:          1000,
   ORDER_USDT_TIER2:    1500,
-  ORDER_USDT_TIER1:    2000,
+  ORDER_USDT_TIER1:    5000,
   ORDER_USDT_ADD:      100,
   MAX_INVESTED:        1500,
   MAX_INVESTED_TIER2:  2250,
-  MAX_INVESTED_TIER1:  3000,
-  LEVERAGE:            30,
-  LEVERAGE_FALLBACK:   20,
+  MAX_INVESTED_TIER1:  7500,
+  LEVERAGE:            18,
+  LEVERAGE_FALLBACK:   15,
   LEVERAGE_FALLBACK2:  10,
   ORDER_USDT_MAJOR:    10000,
+  ORDER_USDT_MAJOR_DCA: 1000,
   LEVERAGE_MAJOR:      50,
   LEVERAGE_MAJOR_FALLBACK: 20,
   RSI_THRESHOLD_MAJOR: 45,  BB_FROM_LOWER_MAJOR: 0.33,
-  RSI_THRESHOLD_TIER1: 45,  BB_FROM_LOWER_TIER1: 0.25,
+  RSI_THRESHOLD_TIER1: 45,  BB_FROM_LOWER_TIER1: 0.33,
   RSI_THRESHOLD_TIER2: 40,  BB_FROM_LOWER_TIER2: 0.15,
   RSI_THRESHOLD_TIER3: 40,  BB_FROM_LOWER_TIER3: 0,
   // ── 코인 그룹 (tier_config.json 에서 로드) ────────────────────
   // 메이저: Cross 50x $10,000 / RSI<45 / BB+33%
-  MAJOR_SYMBOLS:  ["ETHUSDT", "HYPEUSDT"],
-  TIER1_SYMBOLS:  [],
+  MAJOR_SYMBOLS:  ["ETHUSDT", "SOLUSDT", "BTCUSDT"],
+  TIER1_SYMBOLS:  ["TONUSDT", "HYPEUSDT"],
   TIER2_SYMBOLS:  [],
   TIER3_SYMBOLS:  [],
   EXCLUDE_SYMBOLS: [],
-  SL_PCT:             3,
+  SL_PCT:             5,
   SL_COOLDOWN_MS:     8 * 60 * 60 * 1000,   // SL 후 재매수 금지 (8시간)
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
   TRADE_LOG_FILE:     path.join(__dirname, "trade_log.csv"),
+  ESI_STATE_FILE:     path.join(__dirname, "esi_state.json"),
 };
 
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -145,14 +147,13 @@ function calcMA(closes, period) {
 function calcRSI(closes, period) {
   if (closes.length < period + 1) return null;
   let ag = 0, al = 0;
-  const from = Math.max(1, closes.length - period * 3);
-  for (let i = from; i < from + period; i++) {
+  for (let i = 1; i <= period; i++) {
     const diff = closes[i] - closes[i - 1];
     if (diff > 0) ag += diff; else al -= diff;
   }
   ag /= period;
   al /= period;
-  for (let i = from + period; i < closes.length; i++) {
+  for (let i = period + 1; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
     ag = (ag * (period - 1) + Math.max(0,  diff)) / period;
     al = (al * (period - 1) + Math.max(0, -diff)) / period;
@@ -161,53 +162,21 @@ function calcRSI(closes, period) {
   return 100 - 100 / (1 + ag / al);
 }
 
-function loadTpState() {
-  try {
-    const file = path.join(__dirname, "tp_state.json");
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (_) {}
-  return {};
-}
-
-function calcBBPosition(closes) {
-  if (closes.length < 20) return null;
-  const s = closes.slice(-20);
-  const mean = s.reduce((a, b) => a + b, 0) / 20;
-  const std  = Math.sqrt(s.reduce((a, b) => a + (b - mean) ** 2, 0) / 20);
-  const upper = mean + 2 * std;
-  const lower = mean - 2 * std;
-  const cur = closes[closes.length - 1];
-  return { pct: (cur - lower) / (upper - lower) * 100, upper, lower, mean };
-}
-
-async function checkMtfBB(symbols) {
-  const results = [];
-  for (const sym of symbols) {
-    try {
-      const [raw1h, raw4h] = await Promise.all([
-        httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${sym}&interval=1h&limit=50`),
-        httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${sym}&interval=4h&limit=50`),
-      ]);
-      const bb1h = calcBBPosition(raw1h.map(k => parseFloat(k[4])));
-      const bb4h = calcBBPosition(raw4h.map(k => parseFloat(k[4])));
-      if (!bb1h || !bb4h) continue;
-
-      results.push({ sym, bb1h: bb1h.pct, bb4h: bb4h.pct });
-    } catch (_) {}
-  }
-  return results;
-}
-
 async function getEthWeeklyRsiSignal() {
   try {
-    const url = `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=ETHUSDT&interval=1w&limit=20`;
+    const url = `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=ETHUSDT&interval=1w&limit=500`;
     const raw = await httpGet(url);
     const closes = raw.map(k => parseFloat(k[4]));
-    if (closes.length < 16) return { allowed: true, curRsi: null, prevRsi: null };
+    if (closes.length < 20) return { allowed: true, curRsi: null, prevRsi: null, state: "normal" };
     const prevRsi = calcRSI(closes.slice(0, -1), 14);  // 직전 완성 주봉까지
     const curRsi  = calcRSI(closes, 14);                // 현재 진행 중인 주봉 포함
-    const allowed = prevRsi !== null && curRsi !== null && curRsi > prevRsi;
-    return { allowed, curRsi, prevRsi };
+    let state = "normal", allowed = true;
+    if (prevRsi !== null && curRsi !== null) {
+      const diff = +curRsi.toFixed(1) - +prevRsi.toFixed(1);
+      state   = diff > 0 ? "normal" : diff >= -0.5 ? "caution" : diff > -1 ? "skip" : "purge";
+      allowed = state === "normal" || state === "caution";
+    }
+    return { allowed, curRsi, prevRsi, state };
   } catch (e) {
     console.log(`  [WARN] ETH 주봉 RSI 조회 실패: ${e.message} → 매수 허용으로 진행`);
     return { allowed: true, curRsi: null, prevRsi: null };
@@ -364,6 +333,23 @@ async function getKlines(symbol) {
   }));
 }
 
+async function getDailyBBLower(symbol) {
+  try {
+    const d = await httpGet(
+      `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=30`
+    );
+    const closes = d.map(k => parseFloat(k[4]));
+    if (closes.length < 20) return null;
+    const slice = closes.slice(-20);
+    const mean  = slice.reduce((s, v) => s + v, 0) / 20;
+    const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / 20);
+    return mean - 2 * std;
+  } catch (e) {
+    console.log(`  [WARN] ${symbol} 일봉 BB 조회 실패: ${e.message}`);
+    return null;
+  }
+}
+
 // ─── API (Signed) ─────────────────────────────────────────────────────────────
 async function getIsHedgeMode() {
   const qs   = `timestamp=${Date.now()}`;
@@ -371,13 +357,13 @@ async function getIsHedgeMode() {
   return data.dualSidePosition; // true = 헤지모드, false = 단방향
 }
 
-async function hasOpenPosition(symbol, hedgeMode) {
+async function getOpenPosition(symbol, hedgeMode) {
   const qs   = `symbol=${symbol}&timestamp=${Date.now()}`;
   const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
-  if (hedgeMode) {
-    return data.some(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0);
-  }
-  return data.some(p => Math.abs(parseFloat(p.positionAmt)) > 0);
+  const pos  = hedgeMode
+    ? data.find(p => p.positionSide === "LONG" && Math.abs(parseFloat(p.positionAmt)) > 0)
+    : data.find(p => Math.abs(parseFloat(p.positionAmt)) > 0);
+  return pos ? { entryPrice: parseFloat(pos.entryPrice) } : null;
 }
 
 async function setMarginType(symbol, type = "ISOLATED") {
@@ -434,31 +420,51 @@ function analyze(symbol, klines, rsiThreshold = CONFIG.RSI_THRESHOLD, bbFromLowe
   const rsi = calcRSI(prevCloses, CONFIG.RSI_PERIOD);
   if (rsi === null || rsi >= rsiThreshold) return null;
 
-  // 현재봉 RSI 보정: 경과 시간에 따라 임계값 상향 (5분→36, 15분→37, ...)
-  const elapsedMin = (Date.now() - cur.openTime) / 60_000;
-  const curRsiMax  = rsi + 2 + Math.floor(elapsedMin / 10);
-  const curRsi = calcRSI(closes, CONFIG.RSI_PERIOD);
-  if (curRsi === null || curRsi >= curRsiMax) return null;
-
   // 현재가가 직전봉 고저 평균 이하
   const prevMid = (prev.high + prev.low) / 2;
   if (cur.close > prevMid) return null;
 
   // 직전봉 저가가 볼린저 하단(20, 2) 아래로 이탈
-  const bbThreshold = calcBollingerThreshold(prevCloses, 20, 2, bbFromLower);
-  const prevLow = klines[lastIdx - 1].low;
-  const prevAvg = (prevLow + prev.close) / 2;
+  const slice20    = prevCloses.slice(-20);
+  const bbMean     = slice20.reduce((s, v) => s + v, 0) / 20;
+  const bbStd      = Math.sqrt(slice20.reduce((s, v) => s + (v - bbMean) ** 2, 0) / 20);
+  const bbLow      = bbMean - 2 * bbStd;
+  const bbHigh     = bbMean + 2 * bbStd;
+  const bbThreshold = bbLow + (bbMean - bbLow) * bbFromLower;
+  const prevLow    = klines[lastIdx - 1].low;
+  const prevAvg    = (prevLow + prev.close) / 2;
   if (!bbThreshold || prevAvg >= bbThreshold) return null;
 
   return {
     symbol,
-    open:     cur.open,
-    price:    cur.close,
-    rsi:      +rsi.toFixed(1),
-    curRsi:   +curRsi.toFixed(1),
-    curRsiMax: +curRsiMax.toFixed(2),
-    bbLower:  +bbThreshold.toFixed(4),
+    open:          cur.open,
+    price:         cur.close,
+    rsi:          +rsi.toFixed(1),
+    bbLower:      +bbThreshold.toFixed(4),
+    bbPos:        +((prevAvg - bbLow) / (bbHigh - bbLow) * 100).toFixed(1),
+    prevDropPct:  +prevDropPct.toFixed(2),
+    priceVsMidPct: +((prevMid - cur.close) / prevMid * 100).toFixed(2),
   };
+}
+
+// ─── 진입 로그 ────────────────────────────────────────────────────────────────
+const ENTRY_LOG_FILE = path.join(__dirname, "entry_log.csv");
+const ENTRY_LOG_HEADER = "datetime,symbol,order_id,price,qty,rsi,bb_pos,prev_drop_pct,price_vs_mid_pct,hour,tier";
+
+function logEntry(symbol, orderId, price, qty, r, tier) {
+  if (!fs.existsSync(ENTRY_LOG_FILE)) fs.writeFileSync(ENTRY_LOG_FILE, ENTRY_LOG_HEADER + "\n", "utf8");
+  const kst  = new Date(Date.now() + 9 * 3600 * 1000);
+  const yr   = kst.getUTCFullYear();
+  const mo   = kst.getUTCMonth() + 1;
+  const dd   = kst.getUTCDate();
+  const hh   = kst.getUTCHours();
+  const mm   = String(kst.getUTCMinutes()).padStart(2, "0");
+  const ss   = String(kst.getUTCSeconds()).padStart(2, "0");
+  const ampm = hh < 12 ? "AM" : "PM";
+  const h12  = hh % 12 || 12;
+  const datetime = `${yr}. ${mo}. ${dd}. ${ampm} ${h12}:${mm}:${ss}`;
+  const line = `${datetime},${symbol},${orderId},${price},${qty},${r.rsi},${r.bbPos},${r.prevDropPct},${r.priceVsMidPct},${hh},${tier}\n`;
+  try { fs.appendFileSync(ENTRY_LOG_FILE, line, "utf8"); } catch (_) {}
 }
 
 // ─── 텔레그램 ─────────────────────────────────────────────────────────────────
@@ -503,7 +509,7 @@ function formatMessage(results, elapsed, total, ethRsiSignal) {
     const chgPct = ((r.price - r.open) / r.open * 100).toFixed(2);
     const majorTag = r.isMajor ? " 🔵[메이저 Cross 50x]" : "";
     msg += `\n<b>${r.symbol}</b>${majorTag}  $${r.open} → $${r.price} (${chgPct >= 0 ? "+" : ""}${chgPct}%)\n`;
-    msg += `  RSI 직전: <b>${r.rsi}</b> | 현재: <b>${r.curRsi}</b>(기준&lt;${r.curRsiMax}) | BB하단: ${r.bbLower}\n`;
+    msg += `  RSI: <b>${r.rsi}</b> | BB하단: ${r.bbLower}\n`;
     msg += `  거래량: ${vol}\n`;
     if (r.orderStatus) {
       const icon = r.orderStatus.startsWith("매수 완료") ? "✅" : r.orderStatus.startsWith("이미") ? "⏭" : "❌";
@@ -623,19 +629,22 @@ async function main() {
 
   const state = loadState();
   const slCooldownMap = loadSlCooldownMap();
-  const tpState = loadTpState();
 
   try {
     const hedgeMode = await getIsHedgeMode();
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const { volMap, priceMap } = await getVolumes();
+    const kstDay    = new Date(Date.now() + 9 * 3600 * 1000).getUTCDay(); // 0=일 3=수
+    const isWed     = kstDay === 3;
+    if (isWed) console.log("  [수요일] 블랙리스트 매수 개방");
+
     const tieredSet = new Set([
       ...CONFIG.MAJOR_SYMBOLS, ...CONFIG.TIER1_SYMBOLS,
       ...CONFIG.TIER2_SYMBOLS, ...CONFIG.TIER3_SYMBOLS,
     ]);
-    const tiered  = allSymbols.filter(s => tieredSet.has(s) && !CONFIG.EXCLUDE_SYMBOLS.includes(s));
+    const tiered  = allSymbols.filter(s => tieredSet.has(s) && (isWed || !CONFIG.EXCLUDE_SYMBOLS.includes(s)));
     const unranked = allSymbols
-      .filter(s => !tieredSet.has(s) && !CONFIG.EXCLUDE_SYMBOLS.includes(s))
+      .filter(s => !tieredSet.has(s) && (isWed || !CONFIG.EXCLUDE_SYMBOLS.includes(s)))
       .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
     const symbols = [...tiered, ...unranked];
 
@@ -646,10 +655,20 @@ async function main() {
     const ethRsiLog = ethRsiSignal.curRsi !== null
       ? `ETH 주봉 RSI ${ethRsiSignal.prevRsi.toFixed(1)} → ${ethRsiSignal.curRsi.toFixed(1)}`
       : "ETH 주봉 RSI N/A";
-    console.log(`  [ETH RSI] ${ethRsiLog} → 알트 매수 ${ethRsiSignal.allowed ? "✅ 허용" : "🚫 스킵"}`);
+    const esiStateLabel = ethRsiSignal.state === "normal" ? "✅ 정상" : ethRsiSignal.state === "caution" ? "⚠️ 주의(TP5/SL3)" : "🚫 스킵";
+    console.log(`  [ETH RSI] ${ethRsiLog} → ${esiStateLabel}`);
+    fs.writeFileSync(CONFIG.ESI_STATE_FILE, JSON.stringify({
+      allowed:   ethRsiSignal.allowed,
+      state:     ethRsiSignal.state,
+      curRsi:    ethRsiSignal.curRsi,
+      prevRsi:   ethRsiSignal.prevRsi,
+      updatedAt: Date.now(),
+    }), "utf8");
 
-    // RSI 하락 중이면 메이저만 스캔
-    const scanSymbols = ethRsiSignal.allowed ? symbols : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
+    // RSI 하락 중이면 메이저+1티어만 스캔 (1티어는 일봉BB 이탈 시 매수 허용)
+    const scanSymbols = ethRsiSignal.state === "purge" ? [] :
+                        ethRsiSignal.allowed            ? symbols :
+                        symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s) || CONFIG.TIER1_SYMBOLS.includes(s));
     const total = scanSymbols.length;
 
     for (let i = 0; i < scanSymbols.length; i++) {
@@ -675,8 +694,20 @@ async function main() {
           r.vol = volMap[sym] || 0;
           r.isMajor = isMajor;
 
+          // 일봉 BB 하단 이탈 체크 (메이저/1티어 ESI 우회 조건)
+          let belowDailyBB = false;
+          if (isMajor || isTier1) {
+            const dailyBBLower = await getDailyBBLower(sym);
+            if (dailyBBLower !== null && r.price < dailyBBLower) {
+              belowDailyBB = true;
+              r.belowDailyBB = true;
+              console.log(`  [INFO] ${sym} 일봉 BB 하단 이탈 (현재가: ${r.price}, 일봉BB하단: ${dailyBBLower.toFixed(4)})`);
+            }
+          }
+
           try {
-            const alreadyIn = await hasOpenPosition(sym, hedgeMode);
+            const posInfo   = await getOpenPosition(sym, hedgeMode);
+            const alreadyIn = posInfo !== null;
             const curCandleTime = klines[klines.length - 1].openTime;
             const stateEntry = getStateEntry(state, sym);
 
@@ -694,9 +725,32 @@ async function main() {
 
             if (alreadyIn) {
               if (isMajor) {
-                // 메이저 코인은 DCA 없이 스킵
-                console.log(`  [SKIP] ${sym} 이미 보유중 [메이저]`);
-                r.orderStatus = "이미 보유중";
+                // 메이저 추매: $1,000 고정 (동일봉 스킵)
+                if (stateEntry && stateEntry.candleTime === curCandleTime) {
+                  console.log(`  [SKIP] ${sym} 이미 보유중 [메이저] 동일봉`);
+                  r.orderStatus = "이미 보유중 (동일봉)";
+                } else if (r.price >= posInfo.entryPrice) {
+                  console.log(`  [SKIP] ${sym} [메이저] DCA 현재가(${r.price}) >= 평단가(${posInfo.entryPrice.toFixed(4)}) 스킵`);
+                  r.orderStatus = `DCA 스킵 [메이저] (현재가 >= 평단가 ${posInfo.entryPrice.toFixed(4)})`;
+                } else {
+                  const addAmount = CONFIG.ORDER_USDT_MAJOR_DCA;
+                  let order, usedLeverage = CONFIG.LEVERAGE_MAJOR;
+                  try {
+                    await setMarginType(sym, "CROSSED");
+                    await setLeverage(sym, CONFIG.LEVERAGE_MAJOR);
+                    order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                  } catch (e1) {
+                    usedLeverage = CONFIG.LEVERAGE_MAJOR_FALLBACK;
+                    await setMarginType(sym, "CROSSED");
+                    await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
+                    order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
+                  }
+                  const newInvested = (stateEntry?.totalInvested || CONFIG.ORDER_USDT_MAJOR) + addAmount;
+                  updateState(state, sym, curCandleTime, newInvested);
+                  saveState(state);
+                  console.log(`  [DCA] ${sym} [메이저] +$${addAmount} 추가 (총 $${newInvested}) orderId: ${order.orderId} qty: ${order.origQty}`);
+                  r.orderStatus = `DCA +$${addAmount} [메이저] | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
+                }
               } else {
                 if (!stateEntry) {
                   console.log(`  [SKIP] ${sym} 이미 보유중 (추적 없음)`);
@@ -704,9 +758,12 @@ async function main() {
                 } else if (stateEntry.candleTime === curCandleTime) {
                   console.log(`  [SKIP] ${sym} 동일봉 스킵`);
                   r.orderStatus = "이미 보유중 (동일봉)";
-                } else if (!ethRsiSignal.allowed) {
+                } else if (!ethRsiSignal.allowed && !belowDailyBB) {
                   console.log(`  [SKIP] ${sym} DCA ETH 주봉 RSI 하락 중 (${ethRsiLog})`);
                   r.orderStatus = `DCA ETH RSI 필터 스킵 (${ethRsiLog})`;
+                } else if (r.price >= posInfo.entryPrice) {
+                  console.log(`  [SKIP] ${sym} DCA 현재가(${r.price}) >= 평단가(${posInfo.entryPrice.toFixed(4)}) 스킵`);
+                  r.orderStatus = `DCA 스킵 (현재가 >= 평단가 ${posInfo.entryPrice.toFixed(4)})`;
                 } else {
                   // DCA (티어별 초기매수의 10%, 최대한도 티어별)
                   const dcaBase = isTier1 ? CONFIG.ORDER_USDT_TIER1
@@ -759,10 +816,13 @@ async function main() {
                 await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
                 order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
               }
+              updateState(state, sym, curCandleTime, CONFIG.ORDER_USDT_MAJOR);
+              saveState(state);
               console.log(`  [BUY] ${sym} [메이저] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
+              logEntry(sym, order.orderId, r.price, order.origQty, r, "MAJOR");
               r.orderStatus = `매수 완료 [메이저] | qty: ${order.origQty} | ${usedLeverage}x`;
-            } else if (!ethRsiSignal.allowed) {
-              // ETH 주봉 RSI 하락 중 → 알트 신규 매수 스킵
+            } else if (!ethRsiSignal.allowed && !belowDailyBB) {
+              // ETH 주봉 RSI 하락 중 → 알트 신규 매수 스킵 (단, 1티어+일봉BB 이탈 시 예외)
               console.log(`  [SKIP] ${sym} ETH 주봉 RSI 하락 중 (${ethRsiLog})`);
               r.orderStatus = `ETH RSI 필터 스킵 (${ethRsiLog})`;
             } else {
@@ -793,7 +853,10 @@ async function main() {
               updateState(state, sym, curCandleTime, orderAmt);
               saveState(state);
               console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
-              r.orderStatus = `매수 완료 | qty: ${order.origQty} | ${usedLeverage}x`;
+              const tier = isTier1 ? "TIER1" : isTier2 ? "TIER2" : isTier3 ? "TIER3" : "UNRANKED";
+              logEntry(sym, order.orderId, r.price, order.origQty, r, tier);
+              const bbTag = belowDailyBB ? " [일봉BB↓]" : "";
+              r.orderStatus = `매수 완료${bbTag} | qty: ${order.origQty} | ${usedLeverage}x`;
             }
           } catch (e) {
             console.error(`  [ERR] ${sym} 주문 실패:`, e.message);
@@ -812,38 +875,6 @@ async function main() {
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n완료: ${results.length}개 발견 (${elapsed}초)`);
-
-    // 반익 포지션 MTF BB 체크
-    const tpSymbols = Object.keys(tpState);
-    if (tpSymbols.length) {
-      const mtfResults = await checkMtfBB(tpSymbols);
-      if (mtfResults.length) {
-        // 포지션 수익률 조회
-        const pnlMap = {};
-        try {
-          const qs = `timestamp=${Date.now()}`;
-          const pRisk = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
-          for (const p of pRisk) {
-            const amt = parseFloat(p.positionAmt);
-            if (Math.abs(amt) > 0) {
-              const entry = parseFloat(p.entryPrice);
-              const mark  = parseFloat(p.markPrice);
-              pnlMap[p.symbol] = (amt > 0 ? 1 : -1) * (mark - entry) / entry * 100;
-            }
-          }
-        } catch (_) {}
-
-        let mtfMsg = `📊 <b>반익 포지션 MTF BB</b>\n─────────────────\n`;
-        for (const r of mtfResults) {
-          const icon   = r.bb1h > 100 && r.bb4h > 80 ? "🔴" : r.bb1h > 100 ? "🟡" : r.bb4h > 100 ? "🟠" : "🟢";
-          const pnl    = pnlMap[r.sym];
-          const pnlStr = pnl !== undefined ? `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%` : "N/A";
-          mtfMsg += `${icon} <b>${r.sym}</b>  ${pnlStr}\n`;
-        }
-        await sendTelegram(mtfMsg);
-        console.log(`[MTF BB] ${mtfResults.length}개 발송`);
-      }
-    }
 
     if (!results.length) { process.exit(0); return; }
 
