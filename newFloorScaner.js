@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-15 v54";
+const VERSION = "2026-05-15 v55";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -675,10 +675,10 @@ async function main() {
       }
     }
 
-    // ESI 상태별 스캔 범위 (기존 로직 유지) + 일봉BB 이탈 종목은 ESI 무관하게 추가
-    const esiSymbols = ethRsiSignal.state === "purge" ? [] :
-                       ethRsiSignal.allowed ? symbols :
-                       symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
+    // ESI 상태별 스캔 범위: 허용=전체, 불허(skip/purge)=메이저만 + 일봉BB 이탈 1티어 추가
+    const esiSymbols = ethRsiSignal.allowed
+                       ? symbols
+                       : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
     const scanSymbols = [...new Set([...esiSymbols, ...dailyBBSet])];
     const total = scanSymbols.length;
 
