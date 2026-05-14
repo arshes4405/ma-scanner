@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-15 v52";
+const VERSION = "2026-05-15 v53";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -665,10 +665,12 @@ async function main() {
       updatedAt: Date.now(),
     }), "utf8");
 
-    // RSI 하락 중이면 메이저+1티어만 스캔 (1티어는 일봉BB 이탈 시 매수 허용)
-    const scanSymbols = ethRsiSignal.state === "purge" ? [] :
-                        ethRsiSignal.allowed            ? symbols :
-                        symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s) || CONFIG.TIER1_SYMBOLS.includes(s));
+    // ESI 상태별 스캔 범위: normal/caution=전체, skip=메이저+1티어, purge=메이저만
+    const scanSymbols = ethRsiSignal.allowed
+                        ? symbols
+                        : ethRsiSignal.state === "purge"
+                          ? symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s))
+                          : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s) || CONFIG.TIER1_SYMBOLS.includes(s));
     const total = scanSymbols.length;
 
     for (let i = 0; i < scanSymbols.length; i++) {
