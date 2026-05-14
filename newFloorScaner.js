@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-15 v55";
+const VERSION = "2026-05-15 v56";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -665,21 +665,166 @@ async function main() {
       updatedAt: Date.now(),
     }), "utf8");
 
-    // 일봉 BB 사전 체크 (메이저+1티어, ESI 무관하게 항상 수행)
-    const dailyBBSet = new Set();
-    for (const sym of [...CONFIG.MAJOR_SYMBOLS, ...CONFIG.TIER1_SYMBOLS].filter(s => symbols.includes(s))) {
+    // ─── 일봉BB 독립 스캔 (ESI 무관, 메이저+1티어) ────────────────────────────
+    const dailyBBCandidates = [...CONFIG.MAJOR_SYMBOLS, ...CONFIG.TIER1_SYMBOLS].filter(s => symbols.includes(s));
+    const dailyBBResults = [];
+
+    for (let di = 0; di < dailyBBCandidates.length; di++) {
+      const sym = dailyBBCandidates[di];
+      process.stdout.write(`\r[일봉BB] 진행: ${di + 1}/${dailyBBCandidates.length} 발견: ${dailyBBResults.length}개`);
+
       const lower = await getDailyBBLower(sym);
-      if (lower !== null && (priceMap[sym] || 0) < lower) {
-        dailyBBSet.add(sym);
-        console.log(`  [일봉BB] ${sym} 하단 이탈 (현재가: ${priceMap[sym]}, BB하단: ${lower.toFixed(4)})`);
+      if (lower === null || (priceMap[sym] || 0) >= lower) continue;
+
+      const curPrice = priceMap[sym];
+      const isMajor  = CONFIG.MAJOR_SYMBOLS.includes(sym);
+      const dr = { symbol: sym, price: curPrice, dailyBBLower: +lower.toFixed(4), isMajor, isDailyBB: true, vol: volMap[sym] || 0 };
+
+      try {
+        if (!isMajor && slCooldownMap[sym]) {
+          const slElapsed = Date.now() - slCooldownMap[sym];
+          if (slElapsed < CONFIG.SL_COOLDOWN_MS) {
+            const remaining = Math.ceil((CONFIG.SL_COOLDOWN_MS - slElapsed) / 3600000);
+            console.log(`\n  [SKIP] ${sym} [일봉BB] SL 쿨다운 (${remaining}h 남음)`);
+            dr.orderStatus = `SL 쿨다운 (${remaining}h 남음)`;
+            dailyBBResults.push(dr);
+            continue;
+          }
+        }
+
+        const posInfo      = await getOpenPosition(sym, hedgeMode);
+        const alreadyIn    = posInfo !== null;
+        const klines       = await getKlines(sym);
+        const curCandleTime = klines[klines.length - 1].openTime;
+        const stateEntry   = getStateEntry(state, sym);
+
+        if (alreadyIn) {
+          if (curPrice >= posInfo.entryPrice) {
+            console.log(`\n  [SKIP] ${sym} [일봉BB] DCA 현재가(${curPrice}) >= 평단가(${posInfo.entryPrice.toFixed(4)})`);
+            dr.orderStatus = `DCA 스킵 (현재가 >= 평단가 ${posInfo.entryPrice.toFixed(4)})`;
+          } else if (isMajor) {
+            if (stateEntry && stateEntry.candleTime === curCandleTime) {
+              dr.orderStatus = "이미 보유중 (동일봉)";
+            } else {
+              const addAmount = CONFIG.ORDER_USDT_MAJOR_DCA;
+              let order, usedLeverage = CONFIG.LEVERAGE_MAJOR;
+              try {
+                await setMarginType(sym, "CROSSED");
+                await setLeverage(sym, CONFIG.LEVERAGE_MAJOR);
+                order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, addAmount);
+              } catch (e1) {
+                usedLeverage = CONFIG.LEVERAGE_MAJOR_FALLBACK;
+                await setMarginType(sym, "CROSSED");
+                await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
+                order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, addAmount);
+              }
+              const newInvested = (stateEntry?.totalInvested || CONFIG.ORDER_USDT_MAJOR) + addAmount;
+              updateState(state, sym, curCandleTime, newInvested);
+              saveState(state);
+              console.log(`\n  [DCA] ${sym} [메이저][일봉BB] +$${addAmount} (총 $${newInvested}) orderId: ${order.orderId}`);
+              dr.orderStatus = `DCA +$${addAmount} [메이저][일봉BB] | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
+            }
+          } else {
+            const maxInvested = CONFIG.MAX_INVESTED_TIER1;
+            if (!stateEntry) {
+              dr.orderStatus = "이미 보유중 (추적 없음)";
+            } else if (stateEntry.candleTime === curCandleTime) {
+              dr.orderStatus = "이미 보유중 (동일봉)";
+            } else if (stateEntry.totalInvested >= maxInvested) {
+              dr.orderStatus = `최대매수 도달 ($${maxInvested})`;
+            } else {
+              const dcaUnit   = Math.round(CONFIG.ORDER_USDT_TIER1 * 0.1);
+              const addAmount = Math.min(dcaUnit, maxInvested - stateEntry.totalInvested);
+              let order, usedLeverage = CONFIG.LEVERAGE;
+              try {
+                order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, addAmount);
+              } catch (e1) {
+                usedLeverage = CONFIG.LEVERAGE_FALLBACK;
+                try {
+                  await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
+                  order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, addAmount);
+                } catch (e2) {
+                  usedLeverage = CONFIG.LEVERAGE_FALLBACK2;
+                  await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK2);
+                  order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, addAmount);
+                }
+              }
+              const newInvested = stateEntry.totalInvested + addAmount;
+              updateState(state, sym, curCandleTime, newInvested);
+              saveState(state);
+              console.log(`\n  [DCA] ${sym} [1티어][일봉BB] +$${addAmount} (총 $${newInvested}) orderId: ${order.orderId}`);
+              dr.orderStatus = `DCA +$${addAmount} [1티어][일봉BB] | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
+            }
+          }
+        } else if (isMajor) {
+          let order, usedLeverage = CONFIG.LEVERAGE_MAJOR;
+          try {
+            await setMarginType(sym, "CROSSED");
+            await setLeverage(sym, CONFIG.LEVERAGE_MAJOR);
+            order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+          } catch (e1) {
+            usedLeverage = CONFIG.LEVERAGE_MAJOR_FALLBACK;
+            await setMarginType(sym, "CROSSED");
+            await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
+            order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+          }
+          updateState(state, sym, curCandleTime, CONFIG.ORDER_USDT_MAJOR);
+          saveState(state);
+          console.log(`\n  [BUY] ${sym} [메이저][일봉BB] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
+          logEntry(sym, order.orderId, curPrice, order.origQty, { rsi: null, bbPos: null, prevDropPct: null, priceVsMidPct: null }, "MAJOR_BB");
+          dr.orderStatus = `매수 완료 [메이저][일봉BB] | qty: ${order.origQty} | ${usedLeverage}x`;
+        } else {
+          const orderAmt = CONFIG.ORDER_USDT_TIER1;
+          let order, usedLeverage = CONFIG.LEVERAGE;
+          try {
+            await setMarginType(sym);
+            await setLeverage(sym, CONFIG.LEVERAGE);
+            order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, orderAmt);
+          } catch (e1) {
+            usedLeverage = CONFIG.LEVERAGE_FALLBACK;
+            try {
+              await setMarginType(sym);
+              await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK);
+              order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, orderAmt);
+            } catch (e2) {
+              usedLeverage = CONFIG.LEVERAGE_FALLBACK2;
+              await setMarginType(sym);
+              await setLeverage(sym, CONFIG.LEVERAGE_FALLBACK2);
+              order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, orderAmt);
+            }
+          }
+          updateState(state, sym, curCandleTime, orderAmt);
+          saveState(state);
+          console.log(`\n  [BUY] ${sym} [1티어][일봉BB] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
+          logEntry(sym, order.orderId, curPrice, order.origQty, { rsi: null, bbPos: null, prevDropPct: null, priceVsMidPct: null }, "TIER1_BB");
+          dr.orderStatus = `매수 완료 [1티어][일봉BB] | qty: ${order.origQty} | ${usedLeverage}x`;
+        }
+      } catch (e) {
+        console.error(`\n  [ERR] ${sym} 일봉BB 주문 실패:`, e.message);
+        dr.orderStatus = `주문 실패: ${e.message}`;
       }
+      dailyBBResults.push(dr);
+    }
+    console.log(`\n[일봉BB] 완료: ${dailyBBResults.length}개 발견`);
+
+    // 일봉BB 매수 발생 시 TG 발송
+    const dailyBBBuys = dailyBBResults.filter(r => r.orderStatus && (r.orderStatus.startsWith("매수 완료") || r.orderStatus.startsWith("DCA +")));
+    if (dailyBBBuys.length) {
+      let bbMsg = `📊 <b>일봉BB 매수 ${VERSION}</b>\n─────────────────\n`;
+      for (const r of dailyBBBuys) {
+        const tag = r.isMajor ? " 🔵[메이저]" : " 🟡[1티어]";
+        bbMsg += `\n<b>${r.symbol}</b>${tag}  $${r.price}\n`;
+        bbMsg += `  일봉BB하단: ${r.dailyBBLower}\n`;
+        bbMsg += `  ✅ ${r.orderStatus}\n`;
+      }
+      await sendTelegram(bbMsg);
     }
 
-    // ESI 상태별 스캔 범위: 허용=전체, 불허(skip/purge)=메이저만 + 일봉BB 이탈 1티어 추가
-    const esiSymbols = ethRsiSignal.allowed
-                       ? symbols
-                       : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
-    const scanSymbols = [...new Set([...esiSymbols, ...dailyBBSet])];
+    // ─── 1시간봉 ESI 스캔 ────────────────────────────────────────────────────
+    // ESI 상태별 스캔 범위 (v51 원래 로직)
+    const scanSymbols = ethRsiSignal.state === "purge" ? [] :
+                        ethRsiSignal.allowed ? symbols :
+                        symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
     const total = scanSymbols.length;
 
     for (let i = 0; i < scanSymbols.length; i++) {
@@ -704,9 +849,6 @@ async function main() {
         if (r) {
           r.vol = volMap[sym] || 0;
           r.isMajor = isMajor;
-
-          const belowDailyBB = dailyBBSet.has(sym);
-          if (belowDailyBB) r.belowDailyBB = true;
 
           try {
             const posInfo   = await getOpenPosition(sym, hedgeMode);
@@ -761,7 +903,7 @@ async function main() {
                 } else if (stateEntry.candleTime === curCandleTime) {
                   console.log(`  [SKIP] ${sym} 동일봉 스킵`);
                   r.orderStatus = "이미 보유중 (동일봉)";
-                } else if (!ethRsiSignal.allowed && !belowDailyBB) {
+                } else if (!ethRsiSignal.allowed) {
                   console.log(`  [SKIP] ${sym} DCA ETH 주봉 RSI 하락 중 (${ethRsiLog})`);
                   r.orderStatus = `DCA ETH RSI 필터 스킵 (${ethRsiLog})`;
                 } else if (r.price >= posInfo.entryPrice) {
@@ -824,8 +966,8 @@ async function main() {
               console.log(`  [BUY] ${sym} [메이저] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
               logEntry(sym, order.orderId, r.price, order.origQty, r, "MAJOR");
               r.orderStatus = `매수 완료 [메이저] | qty: ${order.origQty} | ${usedLeverage}x`;
-            } else if (!ethRsiSignal.allowed && !belowDailyBB) {
-              // ETH 주봉 RSI 하락 중 → 알트 신규 매수 스킵 (단, 1티어+일봉BB 이탈 시 예외)
+            } else if (!ethRsiSignal.allowed) {
+              // ETH 주봉 RSI 하락 중 → 알트 신규 매수 스킵
               console.log(`  [SKIP] ${sym} ETH 주봉 RSI 하락 중 (${ethRsiLog})`);
               r.orderStatus = `ETH RSI 필터 스킵 (${ethRsiLog})`;
             } else {
@@ -858,8 +1000,7 @@ async function main() {
               console.log(`  [BUY] ${sym} orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
               const tier = isTier1 ? "TIER1" : isTier2 ? "TIER2" : isTier3 ? "TIER3" : "UNRANKED";
               logEntry(sym, order.orderId, r.price, order.origQty, r, tier);
-              const bbTag = belowDailyBB ? " [일봉BB↓]" : "";
-              r.orderStatus = `매수 완료${bbTag} | qty: ${order.origQty} | ${usedLeverage}x`;
+              r.orderStatus = `매수 완료 | qty: ${order.origQty} | ${usedLeverage}x`;
             }
           } catch (e) {
             console.error(`  [ERR] ${sym} 주문 실패:`, e.message);
