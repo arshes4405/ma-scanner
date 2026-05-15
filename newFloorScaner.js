@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-15 v58";
+const VERSION = "2026-05-15 v57";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -49,7 +49,6 @@ const CONFIG = {
   TIER2_SYMBOLS:  [],
   TIER3_SYMBOLS:  [],
   EXCLUDE_SYMBOLS: [],
-  ESI_BUY_PAUSED:     true,   // true = 1H ESI 스캔 매수 일시정지 (일봉BB는 유지)
   SL_PCT:             5,
   SL_COOLDOWN_MS:     8 * 60 * 60 * 1000,   // SL 후 재매수 금지 (8시간)
   STATE_FILE:         path.join(__dirname, "floor_state.json"),
@@ -822,13 +821,10 @@ async function main() {
     }
 
     // ─── 1시간봉 ESI 스캔 ────────────────────────────────────────────────────
-    if (CONFIG.ESI_BUY_PAUSED) {
-      console.log("  [1H ESI] 매수 일시정지 중 (ESI_BUY_PAUSED=true)");
-    }
     // ESI 상태별 스캔 범위: 허용=전체, 불허=메이저만 (메이저는 항상 스캔)
-    const scanSymbols = CONFIG.ESI_BUY_PAUSED ? [] :
-                        ethRsiSignal.allowed ? symbols :
-                        symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
+    const scanSymbols = ethRsiSignal.allowed
+                        ? symbols
+                        : symbols.filter(s => CONFIG.MAJOR_SYMBOLS.includes(s));
     const total = scanSymbols.length;
 
     for (let i = 0; i < scanSymbols.length; i++) {
