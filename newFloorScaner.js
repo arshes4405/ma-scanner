@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-17 v59";
+const VERSION = "2026-05-17 v60";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -721,6 +721,7 @@ async function main() {
               const newInvested = (stateEntry?.totalInvested || CONFIG.ORDER_USDT_MAJOR) + addAmount;
               updateState(state, sym, curCandleTime, newInvested);
               saveState(state);
+              dr.price = parseFloat(order.avgPrice) || curPrice;
               console.log(`\n  [DCA] ${sym} [메이저][일봉BB] +$${addAmount} (총 $${newInvested}) orderId: ${order.orderId}`);
               dr.orderStatus = `DCA +$${addAmount} [메이저][일봉BB] | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
             }
@@ -752,6 +753,7 @@ async function main() {
               const newInvested = stateEntry.totalInvested + addAmount;
               updateState(state, sym, curCandleTime, newInvested);
               saveState(state);
+              dr.price = parseFloat(order.avgPrice) || curPrice;
               console.log(`\n  [DCA] ${sym} [1티어][일봉BB] +$${addAmount} (총 $${newInvested}) orderId: ${order.orderId}`);
               dr.orderStatus = `DCA +$${addAmount} [1티어][일봉BB] | 총 $${newInvested} | qty: ${order.origQty} | ${usedLeverage}x`;
             }
@@ -770,8 +772,9 @@ async function main() {
           }
           updateState(state, sym, curCandleTime, CONFIG.ORDER_USDT_MAJOR);
           saveState(state);
+          dr.price = parseFloat(order.avgPrice) || curPrice;
           console.log(`\n  [BUY] ${sym} [메이저][일봉BB] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
-          logEntry(sym, order.orderId, curPrice, order.origQty, { rsi: null, bbPos: null, prevDropPct: null, priceVsMidPct: null }, "MAJOR_BB");
+          logEntry(sym, order.orderId, dr.price, order.origQty, { rsi: null, bbPos: null, prevDropPct: null, priceVsMidPct: null }, "MAJOR_BB");
           dr.orderStatus = `매수 완료 [메이저][일봉BB] | qty: ${order.origQty} | ${usedLeverage}x`;
         } else {
           const orderAmt = CONFIG.ORDER_USDT_TIER1;
@@ -795,8 +798,9 @@ async function main() {
           }
           updateState(state, sym, curCandleTime, orderAmt);
           saveState(state);
+          dr.price = parseFloat(order.avgPrice) || curPrice;
           console.log(`\n  [BUY] ${sym} [1티어][일봉BB] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
-          logEntry(sym, order.orderId, curPrice, order.origQty, { rsi: null, bbPos: null, prevDropPct: null, priceVsMidPct: null }, "TIER1_BB");
+          logEntry(sym, order.orderId, dr.price, order.origQty, { rsi: null, bbPos: null, prevDropPct: null, priceVsMidPct: null }, "TIER1_BB");
           dr.orderStatus = `매수 완료 [1티어][일봉BB] | qty: ${order.origQty} | ${usedLeverage}x`;
         }
       } catch (e) {
@@ -813,8 +817,8 @@ async function main() {
       let bbMsg = `📊 <b>일봉BB 매수 ${VERSION}</b>\n─────────────────\n`;
       for (const r of dailyBBBuys) {
         const tag = r.isMajor ? " 🔵[메이저]" : " 🟡[1티어]";
-        bbMsg += `\n<b>${r.symbol}</b>${tag}  $${r.price}\n`;
-        bbMsg += `  일봉BB하단: ${r.dailyBBLower}\n`;
+        bbMsg += `\n<b>${r.symbol}</b>${tag}\n`;
+        bbMsg += `  체결가: $${r.price} | 일봉BB하단: ${r.dailyBBLower}\n`;
         bbMsg += `  ✅ ${r.orderStatus}\n`;
       }
       await sendTelegram(bbMsg);
