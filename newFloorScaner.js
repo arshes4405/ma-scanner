@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-15 v57";
+const VERSION = "2026-05-17 v59";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -694,8 +694,8 @@ async function main() {
 
         const posInfo      = await getOpenPosition(sym, hedgeMode);
         const alreadyIn    = posInfo !== null;
-        const klines       = await getKlines(sym);
-        const curCandleTime = klines[klines.length - 1].openTime;
+        const raw6h        = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${sym}&interval=6h&limit=2`);
+        const curCandleTime = raw6h[raw6h.length - 1][0];  // 6시간봉 기준 (하루 최대 4회 DCA)
         const stateEntry   = getStateEntry(state, sym);
 
         if (alreadyIn) {
