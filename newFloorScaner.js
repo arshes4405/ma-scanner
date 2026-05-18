@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-17 v60";
+const VERSION = "2026-05-18 v61";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
