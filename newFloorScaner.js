@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-18 v63";
+const VERSION = "2026-05-18 v64";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -25,18 +25,19 @@ const CONFIG = {
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
   MARKET_BIAS:        0,   // 상승장 +5 / 하락장 -5 / 중립 0
-  ORDER_USDT:          1000,
-  ORDER_USDT_TIER2:    1500,
+  ORDER_USDT:          500,
+  ORDER_USDT_TIER2:    500,
   ORDER_USDT_TIER1:    5000,
   ORDER_USDT_ADD:      100,
-  MAX_INVESTED:        1500,
-  MAX_INVESTED_TIER2:  2250,
+  MAX_INVESTED:        750,
+  MAX_INVESTED_TIER2:  750,
   MAX_INVESTED_TIER1:  7500,
   LEVERAGE:            18,
   LEVERAGE_FALLBACK:   15,
   LEVERAGE_FALLBACK2:  10,
-  ORDER_USDT_MAJOR:    10000,
-  ORDER_USDT_MAJOR_DCA: 1000,
+  ORDER_USDT_BTC:      10000,
+  ORDER_USDT_MAJOR:    5000,
+  ORDER_USDT_MAJOR_DCA: 500,
   LEVERAGE_MAJOR:      50,
   LEVERAGE_MAJOR_FALLBACK: 20,
   RSI_THRESHOLD_MAJOR: 45,  BB_FROM_LOWER_MAJOR: 0.33,
@@ -390,6 +391,10 @@ async function getAvailableBalance() {
   return { available, total };
 }
 
+function majorOrderAmt(sym) {
+  return sym === "BTCUSDT" ? CONFIG.ORDER_USDT_BTC : CONFIG.ORDER_USDT_MAJOR;
+}
+
 async function placeMarketBuy(symbol, price, stepSize, hedgeMode, amount = CONFIG.ORDER_USDT) {
   const qty     = floorToStep(amount / price, stepSize || 0.001);
   if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
@@ -649,6 +654,7 @@ async function main() {
     const orderMultiplier = Math.max(1, Math.floor(totalAssets / 5000));
     if (orderMultiplier > 1.001) {
       const sc = v => Math.round(v * orderMultiplier);
+      CONFIG.ORDER_USDT_BTC       = sc(CONFIG.ORDER_USDT_BTC);
       CONFIG.ORDER_USDT_MAJOR     = sc(CONFIG.ORDER_USDT_MAJOR);
       CONFIG.ORDER_USDT_MAJOR_DCA = sc(CONFIG.ORDER_USDT_MAJOR_DCA);
       CONFIG.ORDER_USDT_TIER1     = sc(CONFIG.ORDER_USDT_TIER1);
@@ -758,7 +764,7 @@ async function main() {
                 await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
                 order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, addAmount);
               }
-              const newInvested = (stateEntry?.totalInvested || CONFIG.ORDER_USDT_MAJOR) + addAmount;
+              const newInvested = (stateEntry?.totalInvested || majorOrderAmt(sym)) + addAmount;
               updateState(state, sym, curCandleTime, newInvested);
               saveState(state);
               dr.price = parseFloat(order.avgPrice) || curPrice;
@@ -803,14 +809,14 @@ async function main() {
           try {
             await setMarginType(sym, "CROSSED");
             await setLeverage(sym, CONFIG.LEVERAGE_MAJOR);
-            order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+            order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, majorOrderAmt(sym));
           } catch (e1) {
             usedLeverage = CONFIG.LEVERAGE_MAJOR_FALLBACK;
             await setMarginType(sym, "CROSSED");
             await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
-            order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+            order = await placeMarketBuy(sym, curPrice, stepSizes[sym], hedgeMode, majorOrderAmt(sym));
           }
-          updateState(state, sym, curCandleTime, CONFIG.ORDER_USDT_MAJOR);
+          updateState(state, sym, curCandleTime, majorOrderAmt(sym));
           saveState(state);
           dr.price = parseFloat(order.avgPrice) || curPrice;
           console.log(`\n  [BUY] ${sym} [메이저][일봉BB] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
@@ -941,7 +947,7 @@ async function main() {
                     await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
                     order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, addAmount);
                   }
-                  const newInvested = (stateEntry?.totalInvested || CONFIG.ORDER_USDT_MAJOR) + addAmount;
+                  const newInvested = (stateEntry?.totalInvested || majorOrderAmt(sym)) + addAmount;
                   updateState(state, sym, curCandleTime, newInvested);
                   saveState(state);
                   console.log(`  [DCA] ${sym} [메이저] +$${addAmount} 추가 (총 $${newInvested}) orderId: ${order.orderId} qty: ${order.origQty}`);
@@ -999,20 +1005,20 @@ async function main() {
                 }
               }
             } else if (isMajor) {
-              // 메이저 코인 신규 매수: Cross 50x $10,000
+              // 메이저 코인 신규 매수 (BTC: $10,000 / ETH·SOL: $5,000 기준)
               let order, usedLeverage = CONFIG.LEVERAGE_MAJOR;
               try {
                 await setMarginType(sym, "CROSSED");
                 await setLeverage(sym, CONFIG.LEVERAGE_MAJOR);
-                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, majorOrderAmt(sym));
               } catch (e1) {
                 console.log(`  [RETRY] ${sym} [메이저] ${CONFIG.LEVERAGE_MAJOR}x 실패 → ${CONFIG.LEVERAGE_MAJOR_FALLBACK}x 재시도`);
                 usedLeverage = CONFIG.LEVERAGE_MAJOR_FALLBACK;
                 await setMarginType(sym, "CROSSED");
                 await setLeverage(sym, CONFIG.LEVERAGE_MAJOR_FALLBACK);
-                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, CONFIG.ORDER_USDT_MAJOR);
+                order = await placeMarketBuy(sym, r.price, stepSizes[sym], hedgeMode, majorOrderAmt(sym));
               }
-              updateState(state, sym, curCandleTime, CONFIG.ORDER_USDT_MAJOR);
+              updateState(state, sym, curCandleTime, majorOrderAmt(sym));
               saveState(state);
               console.log(`  [BUY] ${sym} [메이저] orderId: ${order.orderId} qty: ${order.origQty} (${usedLeverage}x)`);
               logEntry(sym, order.orderId, r.price, order.origQty, r, "MAJOR");
