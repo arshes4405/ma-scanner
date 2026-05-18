@@ -21,6 +21,7 @@ const CONFIG = {
   CANDLE_LIMIT:       150,
   MIN_VOLUME_USDT:    1_000_000,
   REQUEST_DELAY:      120,
+  MIN_BALANCE_USDT:   2000,
   RSI_PERIOD:         14,
   RSI_THRESHOLD:      35,
   MARKET_BIAS:        0,   // 상승장 +5 / 하락장 -5 / 중립 0
@@ -380,6 +381,13 @@ async function setLeverage(symbol, leverage) {
   return httpPostSigned("/fapi/v1/leverage", `${qs}&signature=${sign(qs)}`);
 }
 
+async function getAvailableBalance() {
+  const qs = `timestamp=${Date.now()}`;
+  const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/balance?${qs}&signature=${sign(qs)}`);
+  const usdt = data.find(b => b.asset === "USDT");
+  return usdt ? parseFloat(usdt.availableBalance) : 0;
+}
+
 async function placeMarketBuy(symbol, price, stepSize, hedgeMode, amount = CONFIG.ORDER_USDT) {
   const qty     = floorToStep(amount / price, stepSize || 0.001);
   if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
@@ -632,6 +640,14 @@ async function main() {
 
   try {
     const hedgeMode = await getIsHedgeMode();
+    const availableUsdt = await getAvailableBalance();
+    const buyEnabled = availableUsdt >= CONFIG.MIN_BALANCE_USDT;
+    if (!buyEnabled) {
+      console.log(`  [매수 금지] 가용 잔고 $${availableUsdt.toFixed(0)} < $${CONFIG.MIN_BALANCE_USDT}`);
+      await sendTelegram(`🚫 매수 금지: 가용 잔고 $${availableUsdt.toFixed(0)} (기준: $${CONFIG.MIN_BALANCE_USDT})`);
+    } else {
+      console.log(`  [잔고] $${availableUsdt.toFixed(0)} (매수 허용)`);
+    }
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const { volMap, priceMap } = await getVolumes();
     const kstDay    = new Date(Date.now() + 9 * 3600 * 1000).getUTCDay(); // 0=일 3=수
@@ -697,6 +713,13 @@ async function main() {
         const raw6h        = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${sym}&interval=6h&limit=2`);
         const curCandleTime = raw6h[raw6h.length - 1][0];  // 6시간봉 기준 (하루 최대 4회 DCA)
         const stateEntry   = getStateEntry(state, sym);
+
+        if (!buyEnabled) {
+          console.log(`\n  [SKIP] ${sym} [일봉BB] 잔고 부족 ($${availableUsdt.toFixed(0)})`);
+          dr.orderStatus = `매수 금지 (잔고 $${availableUsdt.toFixed(0)})`;
+          dailyBBResults.push(dr);
+          continue;
+        }
 
         if (alreadyIn) {
           if (curPrice >= posInfo.entryPrice) {
@@ -870,6 +893,13 @@ async function main() {
                 results.push(r);
                 continue;
               }
+            }
+
+            if (!buyEnabled) {
+              console.log(`  [SKIP] ${sym} 잔고 부족 ($${availableUsdt.toFixed(0)})`);
+              r.orderStatus = `매수 금지 (잔고 $${availableUsdt.toFixed(0)})`;
+              results.push(r);
+              continue;
             }
 
             if (alreadyIn) {
