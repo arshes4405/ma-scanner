@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-18 v62";
+const VERSION = "2026-05-18 v63";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -646,7 +646,7 @@ async function main() {
     const buyEnabled = availableUsdt >= CONFIG.MIN_BALANCE_USDT;
 
     // 총자산 기준 주문 배율 (5000달러 기준, 최소 1배)
-    const orderMultiplier = Math.max(1.0, totalAssets / 5000);
+    const orderMultiplier = Math.max(1, Math.floor(totalAssets / 5000));
     if (orderMultiplier > 1.001) {
       const sc = v => Math.round(v * orderMultiplier);
       CONFIG.ORDER_USDT_MAJOR     = sc(CONFIG.ORDER_USDT_MAJOR);
