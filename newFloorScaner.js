@@ -9,7 +9,7 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-const VERSION = "2026-05-18 v61";
+const VERSION = "2026-05-18 v62";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -385,7 +385,9 @@ async function getAvailableBalance() {
   const qs = `timestamp=${Date.now()}`;
   const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/balance?${qs}&signature=${sign(qs)}`);
   const usdt = data.find(b => b.asset === "USDT");
-  return usdt ? parseFloat(usdt.availableBalance) : 0;
+  const available = usdt ? parseFloat(usdt.availableBalance) : 0;
+  const total     = usdt ? parseFloat(usdt.balance) + parseFloat(usdt.crossUnPnl || 0) : 0;
+  return { available, total };
 }
 
 async function placeMarketBuy(symbol, price, stepSize, hedgeMode, amount = CONFIG.ORDER_USDT) {
@@ -640,13 +642,28 @@ async function main() {
 
   try {
     const hedgeMode = await getIsHedgeMode();
-    const availableUsdt = await getAvailableBalance();
+    const { available: availableUsdt, total: totalAssets } = await getAvailableBalance();
     const buyEnabled = availableUsdt >= CONFIG.MIN_BALANCE_USDT;
+
+    // 총자산 기준 주문 배율 (5000달러 기준, 최소 1배)
+    const orderMultiplier = Math.max(1.0, totalAssets / 5000);
+    if (orderMultiplier > 1.001) {
+      const sc = v => Math.round(v * orderMultiplier);
+      CONFIG.ORDER_USDT_MAJOR     = sc(CONFIG.ORDER_USDT_MAJOR);
+      CONFIG.ORDER_USDT_MAJOR_DCA = sc(CONFIG.ORDER_USDT_MAJOR_DCA);
+      CONFIG.ORDER_USDT_TIER1     = sc(CONFIG.ORDER_USDT_TIER1);
+      CONFIG.ORDER_USDT_TIER2     = sc(CONFIG.ORDER_USDT_TIER2);
+      CONFIG.ORDER_USDT           = sc(CONFIG.ORDER_USDT);
+      CONFIG.MAX_INVESTED         = sc(CONFIG.MAX_INVESTED);
+      CONFIG.MAX_INVESTED_TIER2   = sc(CONFIG.MAX_INVESTED_TIER2);
+      CONFIG.MAX_INVESTED_TIER1   = sc(CONFIG.MAX_INVESTED_TIER1);
+    }
+
     if (!buyEnabled) {
       console.log(`  [매수 금지] 가용 잔고 $${availableUsdt.toFixed(0)} < $${CONFIG.MIN_BALANCE_USDT}`);
       await sendTelegram(`🚫 매수 금지: 가용 잔고 $${availableUsdt.toFixed(0)} (기준: $${CONFIG.MIN_BALANCE_USDT})`);
     } else {
-      console.log(`  [잔고] $${availableUsdt.toFixed(0)} (매수 허용)`);
+      console.log(`  [잔고] 가용 $${availableUsdt.toFixed(0)} | 총자산 $${totalAssets.toFixed(0)} | 배율 x${orderMultiplier.toFixed(2)} (기준주문 $${CONFIG.ORDER_USDT})`);
     }
     const { symbols: allSymbols, stepSizes, tickSizes } = await getSymbolsInfo();
     const { volMap, priceMap } = await getVolumes();
