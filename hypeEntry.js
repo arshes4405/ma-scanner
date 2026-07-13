@@ -2,8 +2,8 @@
  * 1H 25MA 진입 + 평단 기준 DCA (HYPE)
  *
  * [진입]  25MA 대비 -2% 첫 터치 → $4000 매수
- * [추매1] 평단 대비 -3% → $1600 추가
- * [추매2] 추매1 후 신규 평단 대비 -5% → $2400 추가
+ * [추매1] 평단 대비 -3% → $2000 추가
+ * [추매2] 추매1 후 신규 평단 대비 -5% → $2000 추가
  * [베이스 채우기] 포지션 < base*0.9 + 25MA -2% → base까지 매수
  *
  * cron: 10분마다
@@ -14,7 +14,7 @@ const crypto = require("crypto");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "2026-07-13 v10";
+const VERSION = "2026-07-13 v11";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -25,8 +25,8 @@ const CONFIG = {
   MA_PERIOD:          25,
   LEVERAGE:           50,
   ENTRY_USDT:         4000,
-  DCA1_USDT:          1600,
-  DCA2_USDT:          2400,
+  DCA1_USDT:          2000,
+  DCA2_USDT:          2000,
   ENTRY_GAP:          -2,
   HALF_SELL_PCT_AVG:  4,   // 평단 대비 목표 %
   HALF_SELL_PCT_BUY:  2,   // 최근 매수가 대비 목표 %
