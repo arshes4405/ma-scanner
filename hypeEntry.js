@@ -4,7 +4,10 @@
  * [진입]  25MA 대비 -2% 첫 터치 → $4000 매수
  * [추매1] 평단 대비 -3% → $2000 추가
  * [추매2] 추매1 후 신규 평단 대비 -5% → $2000 추가
+ * [추매3] 추매2 후 신규 평단 대비 -8% → $2000 추가
+ * [추매4] 추매3 후 신규 평단 대비 -12% → $2000 추가
  * [베이스 채우기] 포지션 < base*0.9 + 25MA -2% → base까지 매수
+ * [완익]  평단 대비 +8% → 전량 매도
  *
  * cron: 10분마다
  */
@@ -14,7 +17,7 @@ const crypto = require("crypto");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "2026-07-13 v11";
+const VERSION = "2026-07-23 v15";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -27,9 +30,10 @@ const CONFIG = {
   ENTRY_USDT:         4000,
   DCA1_USDT:          2000,
   DCA2_USDT:          2000,
+  DCA3_USDT:          2000,
+  DCA4_USDT:          2000,
   ENTRY_GAP:          -2,
-  HALF_SELL_PCT_AVG:  4,   // 평단 대비 목표 %
-  HALF_SELL_PCT_BUY:  2,   // 최근 매수가 대비 목표 %
+  FULL_TP_PCT:        8,   // 평단 대비 +8% → 전량 익절
 };
 
 const TARGETS = [
@@ -39,7 +43,7 @@ const TARGETS = [
 // ─── 상태 ─────────────────────────────────────────────────────────────────────
 function loadState(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
-  catch { return { dca1Done: false, dca2Done: false }; }
+  catch { return { dca1Done: false, dca2Done: false, dca3Done: false, dca4Done: false }; }
 }
 function saveState(file, s) { fs.writeFileSync(file, JSON.stringify(s, null, 2)); }
 
@@ -143,16 +147,6 @@ async function setupLeverage(symbol) {
   catch (e) { if (!e.message.includes("-4046") && !e.message.includes("-4047")) throw e; }
   return useLev;
 }
-async function placeHalfSell(symbol, pos, stepSize, hedgeMode) {
-  const halfQty = floorToStep(pos.qty / 2, stepSize);
-  if (halfQty <= 0) return null;
-  const ps    = hedgeMode ? "&positionSide=LONG" : "";
-  const oqs   = `symbol=${symbol}&side=SELL${ps}&type=MARKET&quantity=${halfQty}&timestamp=${Date.now()}`;
-  const order = await httpPostSigned("/fapi/v1/order", `${oqs}&signature=${sign(oqs)}`);
-  const filled    = parseFloat(order.avgPrice) || pos.entryPrice;
-  const filledQty = parseFloat(order.executedQty) || halfQty;
-  return { filled, filledQty, filledUsdt: filled * filledQty };
-}
 async function placeSell(symbol, qty, hedgeMode) {
   const ps  = hedgeMode ? "&positionSide=LONG" : "";
   const oqs = `symbol=${symbol}&side=SELL${ps}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
@@ -183,9 +177,10 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
 
   // 포지션 없으면 상태 전체 리셋
   if (pos.qty === 0) {
-    state.dca1Done     = false;
-    state.dca2Done     = false;
-    state.halfSoldDone = false;
+    state.dca1Done = false;
+    state.dca2Done = false;
+    state.dca3Done = false;
+    state.dca4Done = false;
     saveState(stateFile, state);
   }
 
@@ -193,15 +188,29 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
   if (pos.qty > 0) {
     const base      = CONFIG.ENTRY_USDT;
     const dca1Level = CONFIG.ENTRY_USDT + CONFIG.DCA1_USDT;
+    const dca2Level = CONFIG.ENTRY_USDT + CONFIG.DCA1_USDT + CONFIG.DCA2_USDT;
+    const dca3Level = CONFIG.ENTRY_USDT + CONFIG.DCA1_USDT + CONFIG.DCA2_USDT + CONFIG.DCA3_USDT;
     if (Math.abs(pos.notional - base) / base <= 0.1) {
-      console.log(`  [${name}] 포지션 $${pos.notional.toFixed(0)} ≈ base $${base} → dca1/dca2/halfSold 리셋`);
-      state.dca1Done     = false;
-      state.dca2Done     = false;
-      state.halfSoldDone = false;
+      console.log(`  [${name}] 포지션 $${pos.notional.toFixed(0)} ≈ base $${base} → dca1/dca2/dca3/dca4 리셋`);
+      state.dca1Done = false;
+      state.dca2Done = false;
+      state.dca3Done = false;
+      state.dca4Done = false;
       saveState(stateFile, state);
     } else if (state.dca2Done && Math.abs(pos.notional - dca1Level) / dca1Level <= 0.1) {
-      console.log(`  [${name}] 포지션 $${pos.notional.toFixed(0)} ≈ dca1Level $${dca1Level} → dca2 리셋`);
+      console.log(`  [${name}] 포지션 $${pos.notional.toFixed(0)} ≈ dca1Level $${dca1Level} → dca2/dca3/dca4 리셋`);
       state.dca2Done = false;
+      state.dca3Done = false;
+      state.dca4Done = false;
+      saveState(stateFile, state);
+    } else if (state.dca3Done && Math.abs(pos.notional - dca2Level) / dca2Level <= 0.1) {
+      console.log(`  [${name}] 포지션 $${pos.notional.toFixed(0)} ≈ dca2Level $${dca2Level} → dca3/dca4 리셋`);
+      state.dca3Done = false;
+      state.dca4Done = false;
+      saveState(stateFile, state);
+    } else if (state.dca4Done && Math.abs(pos.notional - dca3Level) / dca3Level <= 0.1) {
+      console.log(`  [${name}] 포지션 $${pos.notional.toFixed(0)} ≈ dca3Level $${dca3Level} → dca4 리셋`);
+      state.dca4Done = false;
       saveState(stateFile, state);
     }
   }
@@ -214,7 +223,7 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
 
   // ── DCA 후 평단+0.5% 복귀 시 DCA분 매도 → 베이스로 축소 ───────────────────
   const dcaSellCond = pos.qty > 0
-    && (state.dca1Done || state.dca2Done)
+    && (state.dca1Done || state.dca2Done || state.dca3Done || state.dca4Done)
     && cur >= avgPrice * 1.005;
   if (dcaSellCond) {
     const excessUsdt = +(pos.notional - CONFIG.ENTRY_USDT).toFixed(0);
@@ -224,6 +233,8 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
       const result = await placeSell(symbol, excessQty, hedgeMode);
       state.dca1Done = false;
       state.dca2Done = false;
+      state.dca3Done = false;
+      state.dca4Done = false;
       saveState(stateFile, state);
       console.log(`  [${name}] 매도 완료: ${result.filledQty} @ $${result.filled}  ($${result.filledUsdt.toFixed(0)})`);
       await sendTelegram(
@@ -236,20 +247,21 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
     }
   }
 
-  // ── 반익절: max(평단+4%, 최근매수가+2%) 도달 + 베이스 ±10% ────────────────
-  const lastBuyPrice = state.lastBuyPrice || avgPrice;
-  const target = Math.max(avgPrice * (1 + CONFIG.HALF_SELL_PCT_AVG / 100), lastBuyPrice * (1 + CONFIG.HALF_SELL_PCT_BUY / 100));
-  const halfSellCond = pos.qty > 0 && !state.halfSoldDone && cur >= target
-      && Math.abs(pos.notional - CONFIG.ENTRY_USDT) / CONFIG.ENTRY_USDT <= 0.1;
-  if (halfSellCond) {
-    console.log(`  [${name}] ★ 반익절: 현재 $${cur} ≥ 목표 $${target.toFixed(4)} (평단+${CONFIG.HALF_SELL_PCT_AVG}% vs 매수가+${CONFIG.HALF_SELL_PCT_BUY}%) → 절반 매도`);
-    const result = await placeHalfSell(symbol, pos, stepSize, hedgeMode);
+  // ── 완익: 평단 대비 +8% → 전량 매도 ───────────────────────────────────────
+  const fullTpCond = pos.qty > 0 && avgPrice > 0 && cur >= avgPrice * (1 + CONFIG.FULL_TP_PCT / 100);
+  if (fullTpCond) {
+    console.log(`  [${name}] ★ 완익: 현재 $${cur} ≥ 평단+${CONFIG.FULL_TP_PCT}% $${(avgPrice * (1 + CONFIG.FULL_TP_PCT / 100)).toFixed(4)} → 전량 매도`);
+    const result = await placeSell(symbol, floorToStep(pos.qty, stepSize), hedgeMode);
     if (!result) return;
-    state.halfSoldDone = true;
+    state.dca1Done = false;
+    state.dca2Done = false;
+    state.dca3Done = false;
+    state.dca4Done = false;
+    state.lastBuyPrice = 0;
     saveState(stateFile, state);
     console.log(`  [${name}] 매도 완료: ${result.filledQty} @ $${result.filled}  ($${result.filledUsdt.toFixed(0)})`);
     await sendTelegram(
-      `💰 <b>${name} 반익절</b>  (${VERSION})\n─────────────────\n` +
+      `💰 <b>${name} 완익</b>  (${VERSION})\n─────────────────\n` +
       `평단 <b>$${avgPrice.toFixed(4)}</b>  갭 <b>+${pnlPct}%</b>\n\n` +
       `매도  ${result.filledQty}개  @ $${result.filled}\n` +
       `금액  <b>$${result.filledUsdt.toFixed(0)}</b>`
@@ -282,6 +294,8 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
     if (!result) return;
     state.dca1Done = false;
     state.dca2Done = false;
+    state.dca3Done = false;
+    state.dca4Done = false;
     state.lastBuyPrice = result.filled;
     saveState(stateFile, state);
     await sendTelegram(
@@ -331,6 +345,48 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
       `평단 <b>$${avgPrice.toFixed(4)}</b>  갭 <b>${gapFromAvg}%</b>\n\n` +
       `매수  ${result.filledQty}개  @ $${result.filled}  ($${result.filledUsdt.toFixed(0)})\n` +
       `신규 평단  <b>$${newAvg.toFixed(4)}</b>  누적 $${(pos.notional+result.filledUsdt).toFixed(0)} → $${dca2Target}`
+    );
+    return;
+  }
+
+  // ── 추매3: 추매2 후 새 평단 -8% → $800까지 채우기 ───────────────────────
+  if (pos.qty > 0 && state.dca2Done && !state.dca3Done && avgPrice > 0 && cur <= avgPrice * 0.92) {
+    const dca3Target = CONFIG.ENTRY_USDT + CONFIG.DCA1_USDT + CONFIG.DCA2_USDT + CONFIG.DCA3_USDT;
+    const gapFromAvg = +((cur - avgPrice) / avgPrice * 100).toFixed(2);
+    console.log(`  [${name}] ★ 추매3: 평단 대비 ${gapFromAvg}% → $${pos.notional.toFixed(0)} → $${dca3Target}`);
+    const topUpUsdt  = +(dca3Target - pos.notional).toFixed(0);
+    const result = await placeBuy(symbol, topUpUsdt, cur, stepSize, hedgeMode);
+    if (!result) return;
+    state.dca3Done = true;
+    state.lastBuyPrice = result.filled;
+    saveState(stateFile, state);
+    const newAvg = (pos.notional + result.filledUsdt) / (pos.qty + result.filledQty);
+    await sendTelegram(
+      `🔴 <b>${name} 추매3</b>  (${VERSION})\n─────────────────\n` +
+      `평단 <b>$${avgPrice.toFixed(4)}</b>  갭 <b>${gapFromAvg}%</b>\n\n` +
+      `매수  ${result.filledQty}개  @ $${result.filled}  ($${result.filledUsdt.toFixed(0)})\n` +
+      `신규 평단  <b>$${newAvg.toFixed(4)}</b>  누적 $${(pos.notional+result.filledUsdt).toFixed(0)} → $${dca3Target}`
+    );
+    return;
+  }
+
+  // ── 추매4: 추매3 후 새 평단 -12% → $1000까지 채우기 ─────────────────────
+  if (pos.qty > 0 && state.dca3Done && !state.dca4Done && avgPrice > 0 && cur <= avgPrice * 0.88) {
+    const dca4Target = CONFIG.ENTRY_USDT + CONFIG.DCA1_USDT + CONFIG.DCA2_USDT + CONFIG.DCA3_USDT + CONFIG.DCA4_USDT;
+    const gapFromAvg = +((cur - avgPrice) / avgPrice * 100).toFixed(2);
+    console.log(`  [${name}] ★ 추매4: 평단 대비 ${gapFromAvg}% → $${pos.notional.toFixed(0)} → $${dca4Target}`);
+    const topUpUsdt  = +(dca4Target - pos.notional).toFixed(0);
+    const result = await placeBuy(symbol, topUpUsdt, cur, stepSize, hedgeMode);
+    if (!result) return;
+    state.dca4Done = true;
+    state.lastBuyPrice = result.filled;
+    saveState(stateFile, state);
+    const newAvg = (pos.notional + result.filledUsdt) / (pos.qty + result.filledQty);
+    await sendTelegram(
+      `🔴 <b>${name} 추매4</b>  (${VERSION})\n─────────────────\n` +
+      `평단 <b>$${avgPrice.toFixed(4)}</b>  갭 <b>${gapFromAvg}%</b>\n\n` +
+      `매수  ${result.filledQty}개  @ $${result.filled}  ($${result.filledUsdt.toFixed(0)})\n` +
+      `신규 평단  <b>$${newAvg.toFixed(4)}</b>  누적 $${(pos.notional+result.filledUsdt).toFixed(0)} → $${dca4Target}`
     );
     return;
   }
