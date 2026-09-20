@@ -1,9 +1,8 @@
 /**
- * 평단 기준 무한 DCA (BTC) — 진입/반익절 없음, 포지션 존재 시에만 동작
+ * 평단 기준 무한 DCA (BTC) — 진입/매도 없음, 포지션 존재 시에만 동작
  *
- * [추매1]   평단 대비 -3%  → 베이스/2 ($6000) 추가
- * [추매2+]  평단 대비 -5%, -10%, -15% ... (5%씩 증가, 무한) → 베이스/2 ($6000)씩 추가
- * [DCA익절] 추매 후 평단+0.5% 복귀 시 DCA분 매도 → 베이스 $12000로 축소
+ * [추매1]   평단 대비 -3%  → 베이스/2 ($15000) 추가
+ * [추매2+]  평단 대비 -5%, -10%, -15% ... (5%씩 증가, 무한) → 베이스/2 ($15000)씩 추가
  *
  * cron: 10분마다
  */
@@ -22,7 +21,7 @@ const CONFIG = {
   BINANCE_SECRET_KEY: process.env.BINANCE_SECRET_KEY  || "dTHfgpNSvBgWk6bl1GLOpW7oyqauHgTCmFzaC1FgL7PcFcpGsvbo6VctuYIcm5Xx",
   BASE_URL:           "https://fapi.binance.com",
   LEVERAGE:           50,
-  ENTRY_USDT:         15000,
+  ENTRY_USDT:         30000,
   DCA1_GAP:           -3,   // 1차 추매 트리거 (평단 대비 %)
   DCA_STEP_GAP:       -5,   // 2차부터 트리거 증분 (-5, -10, -15 ...)
 };
@@ -142,14 +141,6 @@ async function setupLeverage(symbol) {
   catch (e) { if (!e.message.includes("-4046") && !e.message.includes("-4047")) throw e; }
   return useLev;
 }
-async function placeSell(symbol, qty, hedgeMode) {
-  const ps  = hedgeMode ? "&positionSide=LONG" : "";
-  const oqs = `symbol=${symbol}&side=SELL${ps}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
-  const order = await httpPostSigned("/fapi/v1/order", `${oqs}&signature=${sign(oqs)}`);
-  const filled    = parseFloat(order.avgPrice) || 0;
-  const filledQty = parseFloat(order.executedQty) || qty;
-  return { filled, filledQty, filledUsdt: filled * filledQty };
-}
 async function placeBuy(symbol, usdt, cur, stepSize, hedgeMode) {
   const qty    = floorToStep(usdt / cur, stepSize);
   if (qty <= 0) return null;
@@ -177,41 +168,12 @@ async function runSymbol(symbol, stateFile, hedgeMode) {
     return;
   }
 
-  // 포지션 금액 기준 dcaCount 리셋 (베이스로 돌아왔으면 카운트 초기화)
-  if (Math.abs(pos.notional - CONFIG.ENTRY_USDT) / CONFIG.ENTRY_USDT <= 0.1) {
-    if (state.dcaCount > 0) {
-      console.log(`  [${name}] 포지션 $${pos.notional.toFixed(0)} ≈ base $${CONFIG.ENTRY_USDT} → dcaCount 리셋`);
-      state.dcaCount = 0;
-      saveState(stateFile, state);
-    }
-  }
-
   const avgPrice = pos.entryPrice;
   const dcaCount = state.dcaCount || 0;
   const pnlPct   = avgPrice > 0 ? +((cur - avgPrice) / avgPrice * 100).toFixed(2) : 0;
   console.log(`  [${name}] 현재가 $${cur}  포지션 $${pos.notional.toFixed(0)}  평단 $${avgPrice.toFixed(4)}  평단갭 ${pnlPct}%  dcaCount ${dcaCount}`);
 
   await setupLeverage(symbol);
-
-  // ── DCA 후 평단+0.5% 복귀 시 DCA분 매도 → 베이스로 축소 ───────────────────
-  if (dcaCount > 0 && cur >= avgPrice * 1.005) {
-    const excessUsdt = +(pos.notional - CONFIG.ENTRY_USDT).toFixed(0);
-    const excessQty  = floorToStep(excessUsdt / cur, stepSize);
-    console.log(`  [${name}] ★ DCA익절: 현재 $${cur} ≥ 평단+0.5% $${(avgPrice * 1.005).toFixed(4)} → DCA분 ${excessQty}개 매도`);
-    if (excessQty > 0) {
-      const result = await placeSell(symbol, excessQty, hedgeMode);
-      state.dcaCount = 0;
-      saveState(stateFile, state);
-      console.log(`  [${name}] 매도 완료: ${result.filledQty} @ $${result.filled}  ($${result.filledUsdt.toFixed(0)})`);
-      await sendTelegram(
-        `📉 <b>${name} DCA익절</b>  (${VERSION})\n─────────────────\n` +
-        `평단 <b>$${avgPrice.toFixed(4)}</b>  현재 <b>$${cur}</b>  (+${pnlPct}%)\n\n` +
-        `DCA분 매도  ${result.filledQty}개  @ $${result.filled}\n` +
-        `금액  <b>$${result.filledUsdt.toFixed(0)}</b>  → 베이스 $${CONFIG.ENTRY_USDT}로 축소`
-      );
-      return;
-    }
-  }
 
   // ── 추매: 평단 대비 -3% / -5% / -10% / -15% ... (무한) → 베이스/2씩 추가 ──
   const nextLevel  = dcaCount + 1;
