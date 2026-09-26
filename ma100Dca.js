@@ -1,0 +1,270 @@
+/**
+ * 1H 100MA 추매 배치
+ * 대상: 현재 보유 중인 전체 포지션 (BTC 제외)
+ * 조건: 현재가 < 1시간봉 100MA → $100 고정 추매
+ *  - 평단가 대비 조건 없음 (100MA 아래면 무조건 매수)
+ *  - 레버리지/마진타입 별도 설정 안 함 (기존 포지션 설정 유지)
+ *  - 동일 1시간봉 내 중복 매수 방지 (캔들당 1회)
+ *
+ * 실행: node ma100Dca.js         → 실매수
+ *       node ma100Dca.js --dry-run → 매수 없이 로그만 출력
+ *
+ * cron 예시 (매시 5분): 5 * * * *
+ */
+
+const https  = require("https");
+const crypto = require("crypto");
+const fs     = require("fs");
+const path   = require("path");
+
+const VERSION = "2026-09-26 v1";
+
+const CONFIG = {
+  TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
+  TG_CHAT_ID:         process.env.TG_CHAT_ID          || "133371996",
+  BINANCE_API_KEY:    process.env.BINANCE_API_KEY     || "JYPKR09GLF0jmld6hyGxLqavw3RcTtVEzK8tEtoQwSF2g0Y6XX5kbqjoNBcZrP4N",
+  BINANCE_SECRET_KEY: process.env.BINANCE_SECRET_KEY  || "dTHfgpNSvBgWk6bl1GLOpW7oyqauHgTCmFzaC1FgL7PcFcpGsvbo6VctuYIcm5Xx",
+  BASE_URL:           "https://fapi.binance.com",
+  INTERVAL:           "1h",
+  MA_PERIOD:          100,
+  DCA_USDT:           100,
+  EXCLUDE_SYMBOLS:    ["BTCUSDT"],
+  REQUEST_DELAY:      150,
+  STATE_FILE:         path.join(__dirname, "ma100_dca_state.json"),
+};
+
+const DRY_RUN = process.argv.includes("--dry-run");
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ─── HTTP 유틸 ────────────────────────────────────────────────────────────────
+function sign(qs) {
+  return crypto.createHmac("sha256", CONFIG.BINANCE_SECRET_KEY).update(qs).digest("hex");
+}
+
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+        else resolve(JSON.parse(data));
+      });
+    }).on("error", reject);
+  });
+}
+
+function httpGetAuth(url) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    https.get(
+      { hostname: parsed.hostname, path: parsed.pathname + parsed.search,
+        headers: { "X-MBX-APIKEY": CONFIG.BINANCE_API_KEY } },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => {
+          if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+          else resolve(JSON.parse(data));
+        });
+      }
+    ).on("error", reject);
+  });
+}
+
+function httpPostSigned(endpoint, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      { hostname: "fapi.binance.com", path: endpoint, method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(body),
+          "X-MBX-APIKEY": CONFIG.BINANCE_API_KEY,
+        }},
+      (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () => {
+          if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}: ${d}`));
+          else resolve(JSON.parse(d));
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function httpsPost(hostname, path, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = https.request(
+      { hostname, path, method: "POST", family: 4,
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
+      (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => resolve(JSON.parse(d))); }
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function sendTelegram(text) {
+  try {
+    await httpsPost("api.telegram.org",
+      `/bot${CONFIG.TG_TOKEN}/sendMessage`,
+      { chat_id: CONFIG.TG_CHAT_ID, text, parse_mode: "HTML", disable_web_page_preview: true }
+    );
+  } catch (e) { console.error(`[TG] 전송 실패: ${e.message}`); }
+}
+
+function floorToStep(value, step) {
+  const precision = Math.max(0, Math.round(-Math.log10(step)));
+  return parseFloat((Math.floor(value / step) * step).toFixed(precision));
+}
+
+// ─── 상태 (캔들당 1회 제한) ───────────────────────────────────────────────────
+function loadState() {
+  try {
+    if (fs.existsSync(CONFIG.STATE_FILE)) return JSON.parse(fs.readFileSync(CONFIG.STATE_FILE, "utf8"));
+  } catch (_) {}
+  return {};
+}
+
+function saveState(state) {
+  try { fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(state), "utf8"); } catch (_) {}
+}
+
+// ─── API ─────────────────────────────────────────────────────────────────────
+async function getIsHedgeMode() {
+  const qs = `timestamp=${Date.now()}`;
+  const r  = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v1/positionSide/dual?${qs}&signature=${sign(qs)}`);
+  return r.dualSidePosition === true;
+}
+
+// 심볼 지정 없이 전체 포지션 조회 → 보유 중인 심볼만 추출
+async function getAllOpenPositions(hedgeMode) {
+  const qs   = `timestamp=${Date.now()}`;
+  const data = await httpGetAuth(`${CONFIG.BASE_URL}/fapi/v2/positionRisk?${qs}&signature=${sign(qs)}`);
+  return data
+    .filter(p => hedgeMode ? p.positionSide === "LONG" : true)
+    .filter(p => Math.abs(parseFloat(p.positionAmt)) > 0)
+    .map(p => ({ symbol: p.symbol, entryPrice: parseFloat(p.entryPrice), qty: Math.abs(parseFloat(p.positionAmt)) }));
+}
+
+async function getStepSizes() {
+  const info = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
+  const map  = {};
+  for (const s of info.symbols) {
+    const lot = s.filters.find(f => f.filterType === "LOT_SIZE");
+    if (lot) map[s.symbol] = parseFloat(lot.stepSize);
+  }
+  return map;
+}
+
+async function get1hMA100(symbol) {
+  const raw = await httpGet(
+    `${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${CONFIG.INTERVAL}&limit=${CONFIG.MA_PERIOD + 2}`
+  );
+  const closes = raw.map(k => parseFloat(k[4]));
+  if (closes.length < CONFIG.MA_PERIOD) return null;
+  const ma = closes.slice(-CONFIG.MA_PERIOD).reduce((s, v) => s + v, 0) / CONFIG.MA_PERIOD;
+  return {
+    ma:         +ma.toFixed(6),
+    cur:        closes[closes.length - 1],
+    candleTime: raw[raw.length - 1][0],
+  };
+}
+
+async function placeMarketBuy(symbol, usdtAmount, price, stepSize, hedgeMode) {
+  const qty = floorToStep(usdtAmount / price, stepSize || 0.001);
+  if (qty <= 0) throw new Error(`수량 계산 오류 (price: ${price}, step: ${stepSize})`);
+  const posSide = hedgeMode ? "&positionSide=LONG" : "";
+  const qs = `symbol=${symbol}&side=BUY${posSide}&type=MARKET&quantity=${qty}&timestamp=${Date.now()}`;
+  return httpPostSigned("/fapi/v1/order", `${qs}&signature=${sign(qs)}`);
+}
+
+// ─── 메인 ─────────────────────────────────────────────────────────────────────
+async function main() {
+  console.log(`[${new Date().toLocaleString("ko-KR")}] 1H 100MA 추매 배치 (${VERSION})${DRY_RUN ? " [DRY-RUN]" : ""}`);
+
+  const hedgeMode  = await getIsHedgeMode();
+  const positions  = (await getAllOpenPositions(hedgeMode))
+    .filter(p => !CONFIG.EXCLUDE_SYMBOLS.includes(p.symbol));
+
+  console.log(`  보유 종목 (BTC 제외): ${positions.length}개 → ${positions.map(p => p.symbol).join(", ") || "없음"}`);
+
+  if (positions.length === 0) return;
+
+  const stepSizes = await getStepSizes();
+  const state     = loadState();
+
+  // 더 이상 보유하지 않는 심볼의 상태는 정리
+  const heldSet = new Set(positions.map(p => p.symbol));
+  for (const sym of Object.keys(state)) if (!heldSet.has(sym)) delete state[sym];
+
+  const buys   = [];
+  const errors = [];
+
+  for (const { symbol, entryPrice } of positions) {
+    try {
+      const { ma, cur, candleTime } = await get1hMA100(symbol) || {};
+      if (ma === undefined) { console.log(`  [${symbol}] 캔들 부족 - 스킵`); continue; }
+
+      const gapPct = +((cur - ma) / ma * 100).toFixed(2);
+
+      if (state[symbol]?.candleTime === candleTime) {
+        console.log(`  [${symbol}] 현재가 $${cur} 100MA $${ma} (${gapPct}%) - 동일 캔들 이미 매수함`);
+        continue;
+      }
+
+      if (cur >= ma) {
+        console.log(`  [${symbol}] 현재가 $${cur} 100MA $${ma} (${gapPct}%) - 조건 미충족`);
+        continue;
+      }
+
+      console.log(`  [${symbol}] ★ 현재가 $${cur} < 100MA $${ma} (${gapPct}%) → $${CONFIG.DCA_USDT} 추매${DRY_RUN ? " (dry-run, 미체결)" : ""}`);
+
+      if (DRY_RUN) {
+        buys.push({ symbol, price: cur, ma, gapPct, entryPrice, dryRun: true });
+        continue;
+      }
+
+      const order      = await placeMarketBuy(symbol, CONFIG.DCA_USDT, cur, stepSizes[symbol], hedgeMode);
+      // 주문 ACK 응답은 체결 확정 전에 도착해 avgPrice/executedQty가 0으로 올 수 있음 → origQty/현재가로 대체 표시
+      const filled     = parseFloat(order.avgPrice) || cur;
+      const filledQty  = parseFloat(order.executedQty) || parseFloat(order.origQty) || 0;
+
+      state[symbol] = { candleTime, time: Date.now() };
+      saveState(state);
+
+      console.log(`  [${symbol}] 매수 완료: ${filledQty} @ $${filled} orderId: ${order.orderId}`);
+      buys.push({ symbol, price: filled, qty: filledQty, ma, gapPct, entryPrice });
+    } catch (e) {
+      console.error(`  [${symbol}] 오류: ${e.message}`);
+      errors.push({ symbol, message: e.message });
+    }
+    await sleep(CONFIG.REQUEST_DELAY);
+  }
+
+  if (buys.length || errors.length) {
+    let msg = `📊 <b>1H 100MA 추매${DRY_RUN ? " (DRY-RUN)" : ""}</b>  (${VERSION})\n─────────────────\n`;
+    for (const b of buys) {
+      msg += `\n<b>${b.symbol}</b>\n`;
+      msg += `  100MA $${b.ma}  현재가 $${b.price}  (${b.gapPct}%)\n`;
+      if (!b.dryRun) msg += `  ✅ 추매 $${CONFIG.DCA_USDT}  qty ${b.qty}\n`;
+      else msg += `  🔎 조건 충족 (매수 안 함)\n`;
+    }
+    for (const e of errors) {
+      msg += `\n<b>${e.symbol}</b>\n  ❌ ${e.message}\n`;
+    }
+    await sendTelegram(msg);
+  }
+}
+
+main().catch(async e => {
+  console.error("에러:", e.message);
+  await sendTelegram(`❌ [1H 100MA 추매] 오류: ${e.message}`);
+});
