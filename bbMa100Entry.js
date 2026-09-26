@@ -29,6 +29,7 @@ const CONFIG = {
   MIN_VOLUME_USDT:    1_000_000,
   BB_PERIOD:          20,
   BB_MULT:            2,
+  BB_FROM_LOWER:      0.2,  // 하단선~중심선 사이 20% 지점까지 허용 (0=하단선 정확히)
   MA_PERIOD:          100,
   CONSECUTIVE_MIN:    12,
   ORDER_USDT:         500,
@@ -141,6 +142,16 @@ function calcBBLower(closes, period = CONFIG.BB_PERIOD, mult = CONFIG.BB_MULT) {
   return mean - mult * std;
 }
 
+// 하단선~중심선 사이 fromLower 비율 지점을 임계값으로 반환 (fromLower=0 이면 하단선과 동일)
+function calcBBThreshold(closes, period = CONFIG.BB_PERIOD, mult = CONFIG.BB_MULT, fromLower = CONFIG.BB_FROM_LOWER) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const mean  = slice.reduce((s, v) => s + v, 0) / period;
+  const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
+  const lower = mean - mult * std;
+  return lower + (mean - lower) * fromLower;
+}
+
 // 최근 캔들부터 거꾸로, "종가 < 그 시점 기준 100MA" 가 끊기지 않고 연속되는 개수
 function countConsecutiveBelowMA(closes, period = CONFIG.MA_PERIOD) {
   let count = 0;
@@ -178,10 +189,10 @@ async function getVolumes() {
   return { volMap, priceMap };
 }
 
-async function get4hBBLower(symbol) {
+async function get4hBBThreshold(symbol) {
   const raw = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=4h&limit=${CONFIG.BB_PERIOD + 2}`);
   const closes = raw.map(k => parseFloat(k[4]));
-  return calcBBLower(closes);
+  return calcBBThreshold(closes);
 }
 
 async function get1hMA100Streak(symbol) {
@@ -289,15 +300,15 @@ async function main() {
     process.stdout.write(`\r진행: ${i + 1}/${symbols.length} 후보: ${candidateCount}개`);
     try {
       const curPrice = priceMap[sym];
-      const bbLower  = await get4hBBLower(sym);
-      if (bbLower === null || curPrice >= bbLower) { await sleep(CONFIG.REQUEST_DELAY); continue; }
+      const bbThreshold = await get4hBBThreshold(sym);
+      if (bbThreshold === null || curPrice >= bbThreshold) { await sleep(CONFIG.REQUEST_DELAY); continue; }
 
       const ma1h = await get1hMA100Streak(sym);
       if (!ma1h || ma1h.streak < CONFIG.CONSECUTIVE_MIN) { await sleep(CONFIG.REQUEST_DELAY); continue; }
 
       candidateCount++;
-      const gapPct = +((curPrice - bbLower) / bbLower * 100).toFixed(2);
-      console.log(`\n  [${sym}] ★ 후보: 현재가 $${curPrice} < 4H BB하단 $${bbLower.toFixed(6)} (${gapPct}%) | 1H 100MA 연속 ${ma1h.streak}봉`);
+      const gapPct = +((curPrice - bbThreshold) / bbThreshold * 100).toFixed(2);
+      console.log(`\n  [${sym}] ★ 후보: 현재가 $${curPrice} < 4H BB임계값 $${bbThreshold.toFixed(6)} (fromLower ${CONFIG.BB_FROM_LOWER}, ${gapPct}%) | 1H 100MA 연속 ${ma1h.streak}봉`);
 
       const posInfo = await getOpenPosition(sym, hedgeMode);
       if (posInfo) {
@@ -320,7 +331,7 @@ async function main() {
 
       if (DRY_RUN) {
         console.log(`  [${sym}] (dry-run, 미체결)`);
-        buys.push({ symbol: sym, price: curPrice, bbLower, gapPct, streak: ma1h.streak, dryRun: true });
+        buys.push({ symbol: sym, price: curPrice, bbThreshold, gapPct, streak: ma1h.streak, dryRun: true });
         heldCount++;
         await sleep(CONFIG.REQUEST_DELAY);
         continue;
@@ -335,7 +346,7 @@ async function main() {
 
       heldCount++;
       console.log(`  [${sym}] 매수 완료: ${filledQty} @ $${filled} orderId: ${order.orderId} (${usedLev}x) | 보유 ${heldCount}/${CONFIG.MAX_POSITIONS}`);
-      buys.push({ symbol: sym, price: filled, qty: filledQty, bbLower, gapPct, streak: ma1h.streak, lev: usedLev });
+      buys.push({ symbol: sym, price: filled, qty: filledQty, bbThreshold, gapPct, streak: ma1h.streak, lev: usedLev });
     } catch (e) {
       console.error(`\n  [${sym}] 오류: ${e.message}`);
       errors.push({ symbol: sym, message: e.message });
@@ -350,7 +361,7 @@ async function main() {
     let msg = `📊 <b>볼린저+100MA 신규진입${DRY_RUN ? " (DRY-RUN)" : ""}</b>  (${VERSION})\n─────────────────\n`;
     for (const b of buys) {
       msg += `\n<b>${b.symbol}</b>\n`;
-      msg += `  4H BB하단 $${b.bbLower.toFixed(6)}  현재가 $${b.price}  (${b.gapPct}%)\n`;
+      msg += `  4H BB임계값 $${b.bbThreshold.toFixed(6)} (fromLower ${CONFIG.BB_FROM_LOWER})  현재가 $${b.price}  (${b.gapPct}%)\n`;
       msg += `  1H 100MA 연속 ${b.streak}봉\n`;
       if (!b.dryRun) msg += `  ✅ 매수 $${CONFIG.ORDER_USDT}  qty ${b.qty}  ${b.lev}x CROSS\n`;
       else msg += `  🔎 조건 충족 (매수 안 함)\n`;
