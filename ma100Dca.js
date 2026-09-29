@@ -2,11 +2,11 @@
  * 1H 100MA 추매 배치
  * 대상: 현재 보유 중인 전체 포지션 (BTC 제외)
  * 조건: 현재가 < 1시간봉 100MA → $100 고정 추매
- *  - 손실 중일 때만 매수 (현재가 < 평단가), 수익권이면 스킵
+ *  - 포지션이 한도 절반($1,500) 이하면 손익 무관하게 매수
+ *  - 한도 절반 초과 시엔 손실 중일 때만 매수 (현재가 < 평단가) + 2시간에 1회로 속도 제한
  *  - 레버리지/마진타입 별도 설정 안 함 (기존 포지션 설정 유지)
  *  - 동일 1시간봉 내 중복 매수 방지 (캔들당 1회)
  *  - 종목당 포지션 $3,000 상한 (전체 notional 기준, 남은 한도만큼만 추매)
- *  - 포지션이 한도의 절반($1,500) 초과 시 2시간에 1회로 추매 속도 제한
  *  - 매도: 평단 대비 +5% → 전량 매도 (익절)
  *
  * 실행: node ma100Dca.js         → 실매수
@@ -265,9 +265,11 @@ async function main() {
         continue;
       }
 
-      // 손실 중일 때만 추매 (현재가 < 평단가)
-      if (cur >= entryPrice) {
-        console.log(`  [${symbol}] 현재가 $${cur} < 100MA $${ma} 이지만 수익권 (평단 $${entryPrice}) - 추매 스킵`);
+      // 한도 절반($1,500) 초과 시에만 손실 조건 + 2시간 간격 제한 적용
+      // 절반 이하일 때는 손익 무관하게 매수
+      const halfCap = CONFIG.MAX_NOTIONAL_USDT / 2;
+      if (notional > halfCap && cur >= entryPrice) {
+        console.log(`  [${symbol}] 현재가 $${cur} < 100MA $${ma} 이지만 수익권 (평단 $${entryPrice}) - 추매 스킵 (포지션 $${notional.toFixed(0)} > 한도절반 $${halfCap})`);
         continue;
       }
 
@@ -279,7 +281,6 @@ async function main() {
       }
 
       // 한도 절반 초과 시 추매 간격을 2시간으로 제한
-      const halfCap = CONFIG.MAX_NOTIONAL_USDT / 2;
       if (notional > halfCap) {
         const lastTime = state[symbol]?.time || 0;
         const elapsed  = Date.now() - lastTime;
