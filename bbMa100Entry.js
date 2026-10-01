@@ -8,6 +8,8 @@
  * 신규진입만 수행 (이미 보유 중인 종목은 스킵, DCA 없음)
  * 매수: $500 / 10x Cross
  * BTC 제외, 보유 종목 10개(BTC 제외) 도달 시 신규매수 중단
+ * 후보가 남은 한도보다 많으면 24H 거래량 높은 순으로 우선 매수
+ * 인버스(숏) 토큰화 ETF 제외 (SQQQ/SOXS/TZA/TBT/UVXY 등)
  *
  * 실행: node bbMa100Entry.js         → 실매수
  *       node bbMa100Entry.js --dry-run → 매수 없이 로그만 출력
@@ -18,7 +20,7 @@
 const https  = require("https");
 const crypto = require("crypto");
 
-const VERSION = "2026-09-26 v1";
+const VERSION = "2026-10-01 v3";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -38,6 +40,9 @@ const CONFIG = {
   MAX_POSITIONS:      10,   // BTC 제외 보유 종목 수 상한 (도달 시 신규매수 중단)
   SKIP_SYMBOLS:       ["USDCUSDT", "BTCDOMUSDT"],
   EXCLUDE_SYMBOLS:    ["BTCUSDT"],
+  // 인버스(숏) 토큰화 ETF — 롱으로 사면 실제로는 기초지수 하락에 베팅하는 셈이라 제외
+  // SQQQ=숏 나스닥3x, SOXS=숏 반도체3x, TZA=숏 러셀2000 3x, TBT=숏 20Y국채 2x, UVXY=롱 변동성(증시 하락 시 상승)
+  INVERSE_SYMBOLS:    ["SQQQUSDT", "SOXSUSDT", "TZAUSDT", "TBTUSDT", "UVXYUSDT"],
   REQUEST_DELAY:      120,
 };
 
@@ -287,17 +292,18 @@ async function main() {
   const symbols = allSymbols
     .filter(s => !CONFIG.SKIP_SYMBOLS.includes(s))
     .filter(s => !CONFIG.EXCLUDE_SYMBOLS.includes(s))
+    .filter(s => !CONFIG.INVERSE_SYMBOLS.includes(s))
     .filter(s => (volMap[s] || 0) >= CONFIG.MIN_VOLUME_USDT);
 
   console.log(`  대상: ${symbols.length}개 (거래량 $${CONFIG.MIN_VOLUME_USDT.toLocaleString()} 이상)`);
 
-  const buys = [];
   const errors = [];
-  let candidateCount = 0;
 
+  // ── 1차: 조건 스캔 (매수 없이 후보만 수집, 이미 보유중이면 여기서 스킵) ──
+  const candidates = [];
   for (let i = 0; i < symbols.length; i++) {
     const sym = symbols[i];
-    process.stdout.write(`\r진행: ${i + 1}/${symbols.length} 후보: ${candidateCount}개`);
+    process.stdout.write(`\r스캔: ${i + 1}/${symbols.length} 후보: ${candidates.length}개`);
     try {
       const curPrice = priceMap[sym];
       const bbThreshold = await get4hBBThreshold(sym);
@@ -306,9 +312,9 @@ async function main() {
       const ma1h = await get1hMA100Streak(sym);
       if (!ma1h || ma1h.streak < CONFIG.CONSECUTIVE_MIN) { await sleep(CONFIG.REQUEST_DELAY); continue; }
 
-      candidateCount++;
       const gapPct = +((curPrice - bbThreshold) / bbThreshold * 100).toFixed(2);
-      console.log(`\n  [${sym}] ★ 후보: 현재가 $${curPrice} < 4H BB임계값 $${bbThreshold.toFixed(6)} (fromLower ${CONFIG.BB_FROM_LOWER}, ${gapPct}%) | 1H 100MA 연속 ${ma1h.streak}봉`);
+      const vol = volMap[sym] || 0;
+      console.log(`\n  [${sym}] ★ 후보: 현재가 $${curPrice} < 4H BB임계값 $${bbThreshold.toFixed(6)} (fromLower ${CONFIG.BB_FROM_LOWER}, ${gapPct}%) | 1H 100MA 연속 ${ma1h.streak}봉 | 거래량 $${(vol / 1e6).toFixed(1)}M`);
 
       const posInfo = await getOpenPosition(sym, hedgeMode);
       if (posInfo) {
@@ -317,23 +323,38 @@ async function main() {
         continue;
       }
 
+      candidates.push({ symbol: sym, curPrice, bbThreshold, gapPct, streak: ma1h.streak, vol });
+    } catch (e) {
+      console.error(`\n  [${sym}] 오류: ${e.message}`);
+      errors.push({ symbol: sym, message: e.message });
+    }
+    await sleep(CONFIG.REQUEST_DELAY);
+  }
+
+  // ── 2차: 거래량 우선순위(높은 순) 정렬 후, 한도까지만 매수 ──
+  candidates.sort((a, b) => b.vol - a.vol);
+  console.log(`\n\n스캔 완료: 후보 ${candidates.length}개 (거래량 우선순위)`);
+  candidates.forEach((c, i) => console.log(`  ${i + 1}. ${c.symbol.padEnd(14)} 거래량 $${(c.vol / 1e6).toFixed(1)}M  gap ${c.gapPct}%  streak ${c.streak}봉`));
+
+  const buys = [];
+
+  for (const c of candidates) {
+    const { symbol: sym, curPrice, bbThreshold, gapPct, streak, vol } = c;
+    try {
       if (!buyEnabled) {
         console.log(`  [${sym}] 잔고 부족 → 매수 스킵`);
-        await sleep(CONFIG.REQUEST_DELAY);
         continue;
       }
 
       if (heldCount >= CONFIG.MAX_POSITIONS) {
-        console.log(`  [${sym}] 포지션 한도 도달 (${heldCount}/${CONFIG.MAX_POSITIONS}, BTC 제외) → 매수 스킵`);
-        await sleep(CONFIG.REQUEST_DELAY);
+        console.log(`  [${sym}] 포지션 한도 도달 (${heldCount}/${CONFIG.MAX_POSITIONS}, BTC 제외) → 거래량 우선순위에서 밀려 매수 스킵`);
         continue;
       }
 
       if (DRY_RUN) {
         console.log(`  [${sym}] (dry-run, 미체결)`);
-        buys.push({ symbol: sym, price: curPrice, bbThreshold, gapPct, streak: ma1h.streak, dryRun: true });
+        buys.push({ symbol: sym, price: curPrice, bbThreshold, gapPct, streak, vol, dryRun: true });
         heldCount++;
-        await sleep(CONFIG.REQUEST_DELAY);
         continue;
       }
 
@@ -346,23 +367,23 @@ async function main() {
 
       heldCount++;
       console.log(`  [${sym}] 매수 완료: ${filledQty} @ $${filled} orderId: ${order.orderId} (${usedLev}x) | 보유 ${heldCount}/${CONFIG.MAX_POSITIONS}`);
-      buys.push({ symbol: sym, price: filled, qty: filledQty, bbThreshold, gapPct, streak: ma1h.streak, lev: usedLev });
+      buys.push({ symbol: sym, price: filled, qty: filledQty, bbThreshold, gapPct, streak, vol, lev: usedLev });
     } catch (e) {
-      console.error(`\n  [${sym}] 오류: ${e.message}`);
+      console.error(`  [${sym}] 오류: ${e.message}`);
       errors.push({ symbol: sym, message: e.message });
     }
     await sleep(CONFIG.REQUEST_DELAY);
   }
 
   const elapsed = Math.round((Date.now() - startTime) / 1000);
-  console.log(`\n완료: ${elapsed}초 | 후보 ${candidateCount}개 | 매수 ${buys.filter(b => !b.dryRun).length}개`);
+  console.log(`\n완료: ${elapsed}초 | 후보 ${candidates.length}개 | 매수 ${buys.filter(b => !b.dryRun).length}개`);
 
   if (buys.length || errors.length) {
     let msg = `📊 <b>볼린저+100MA 신규진입${DRY_RUN ? " (DRY-RUN)" : ""}</b>  (${VERSION})\n─────────────────\n`;
     for (const b of buys) {
       msg += `\n<b>${b.symbol}</b>\n`;
       msg += `  4H BB임계값 $${b.bbThreshold.toFixed(6)} (fromLower ${CONFIG.BB_FROM_LOWER})  현재가 $${b.price}  (${b.gapPct}%)\n`;
-      msg += `  1H 100MA 연속 ${b.streak}봉\n`;
+      msg += `  1H 100MA 연속 ${b.streak}봉  거래량 $${(b.vol / 1e6).toFixed(1)}M\n`;
       if (!b.dryRun) msg += `  ✅ 매수 $${CONFIG.ORDER_USDT}  qty ${b.qty}  ${b.lev}x CROSS\n`;
       else msg += `  🔎 조건 충족 (매수 안 함)\n`;
     }
