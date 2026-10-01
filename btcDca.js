@@ -2,12 +2,18 @@
  * 일일 DCA 매수
  * 매일 오후 3시 KST (06:00 UTC) 실행
  *  - BTC: 0.01개 무조건 매수
+ *  - QQQ: 전고점(ATH) 대비 하락폭 티어별 매수, 20x Cross
+ *    -5% → $5,000 / -10% → $10,000 / -15% → $15,000 / -20% → $20,000 (최대 누적 $50,000)
+ *    각 티어는 "평생 1회만" 발동 — ath_tier_state.json에 영구 기록, ATH가 갱신돼도 리셋 안 됨
+ *    (전고점은 Binance QQQUSDT 상장 이후 일봉 고가 기준 — 상장 전 실물 ETF 전고점은 반영되지 않음)
  */
 
 const https  = require("https");
 const crypto = require("crypto");
+const fs     = require("fs");
+const path   = require("path");
 
-const VERSION = "2026-06-09 v2";
+const VERSION = "2026-10-01 v5";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -16,11 +22,33 @@ const CONFIG = {
   BINANCE_SECRET_KEY: process.env.BINANCE_SECRET_KEY  || "dTHfgpNSvBgWk6bl1GLOpW7oyqauHgTCmFzaC1FgL7PcFcpGsvbo6VctuYIcm5Xx",
   BASE_URL:           "https://fapi.binance.com",
   LEVERAGE:           100,
+  TIER_STATE_FILE:    path.join(__dirname, "ath_tier_state.json"),
 };
 
+// ─── ATH 티어 상태 (영구 1회성 기록 — 심볼별 { "dropPct": true }) ────────────────
+function loadTierState() {
+  try { return JSON.parse(fs.readFileSync(CONFIG.TIER_STATE_FILE, "utf8")); } catch { return {}; }
+}
+function saveTierState(state) {
+  try { fs.writeFileSync(CONFIG.TIER_STATE_FILE, JSON.stringify(state, null, 2), "utf8"); } catch (_) {}
+}
+
+// QQQ 티어 베이스 금액 — 이 값만 바꾸면 전체 티어 금액이 1x/2x/3x/4x로 같이 조정됨
+// (예: 7000으로 바꾸면 -5%→$7,000 / -10%→$14,000 / -15%→$21,000 / -20%→$28,000, 최대 누적 $70,000)
+const QQQ_BASE_USDT = 5000;
+
 // BTC: qty 고정 (0.01개 무조건 매수)
+// QQQ: 전고점 대비 하락폭 티어 (평생 1회씩, 여러 티어 동시충족 시 전부 매수), 20x Cross
 const DCA_TARGETS = [
   { symbol: "BTCUSDT",  qty: 0.01, usdtAmount: null, onlyWhenLoss: false },
+  { symbol: "QQQUSDT",  qty: null, usdtAmount: null, onlyWhenLoss: false, leverage: 20,
+    athTiers: [
+      { dropPct: 5,  usdtAmount: QQQ_BASE_USDT * 1 },
+      { dropPct: 10, usdtAmount: QQQ_BASE_USDT * 2 },
+      { dropPct: 15, usdtAmount: QQQ_BASE_USDT * 3 },
+      { dropPct: 20, usdtAmount: QQQ_BASE_USDT * 4 },
+    ],
+  },
 ];
 
 // --only SYMBOL,SYMBOL2 인자로 특정 심볼만 실행 가능 (예: node btcDca.js --only CRCLUSDT,ETHUSDT)
@@ -136,6 +164,18 @@ async function getPrice(symbol) {
   return parseFloat(data.price);
 }
 
+// 전고점(ATH) + 현재가 조회 (일봉 고가 기준, 최대 1500개 = 상장 이후 전체 기간)
+async function getAthAndPrice(symbol) {
+  const raw = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=1500`);
+  let ath = 0;
+  for (const k of raw) {
+    const high = parseFloat(k[2]);
+    if (high > ath) ath = high;
+  }
+  const curPrice = parseFloat(raw[raw.length - 1][4]);
+  return { ath, curPrice };
+}
+
 // 포지션 손익 조회 (포지션 없으면 null, 있으면 unrealizedProfit)
 async function getPositionPnl(symbol, hedgeMode) {
   const qs   = `symbol=${symbol}&timestamp=${Date.now()}`;
@@ -183,16 +223,74 @@ async function placeMarketBuy(symbol, qty, hedgeMode) {
 async function main() {
   console.log(`[${new Date().toLocaleString("ko-KR")}] 일일 DCA 시작 (${VERSION})`);
 
-  const hedgeMode = await getIsHedgeMode();
-  const results   = [];
+  const hedgeMode   = await getIsHedgeMode();
+  const results     = [];
+  const tierStates  = loadTierState();
 
   const targets = onlySet ? DCA_TARGETS.filter(t => onlySet.has(t.symbol)) : DCA_TARGETS;
 
   for (const target of targets) {
-    const { symbol, onlyWhenLoss, usdtAmountNoLoss } = target;
+    const { symbol, onlyWhenLoss, usdtAmountNoLoss, athDropPct, athTiers, leverage } = target;
     let   { qty, usdtAmount } = target;
+    const useLeverage = leverage || CONFIG.LEVERAGE;
 
     try {
+      // 전고점(ATH) 대비 하락률 티어 체크 — 티어는 평생 1회만 발동 (ATH 갱신돼도 리셋 안 됨)
+      // 한 번에 여러 티어가 동시 충족되면 전부 각각 매수 (예: 하루에 -22%로 급락 시 4티어 전부)
+      if (athTiers && athTiers.length) {
+        const { ath, curPrice } = await getAthAndPrice(symbol);
+        const dropPct = +((curPrice - ath) / ath * 100).toFixed(2); // 0 또는 음수
+        const dropAbs = -dropPct;
+
+        const tierState   = tierStates[symbol] || {};
+        const sortedTiers  = [...athTiers].sort((a, b) => a.dropPct - b.dropPct);
+        const toFire       = sortedTiers.filter(t => !tierState[t.dropPct] && dropAbs >= t.dropPct);
+
+        if (toFire.length === 0) {
+          const doneTiers = sortedTiers.filter(t => tierState[t.dropPct]).map(t => `-${t.dropPct}%`);
+          console.log(`  [${symbol}] 전고점 $${ath} 대비 ${dropPct}% - 신규 트리거 없음 (완료 티어: ${doneTiers.join(", ") || "없음"})`);
+          results.push({ symbol, status: `조건 미충족 (전고점 $${ath} 대비 ${dropPct}%, 완료 ${doneTiers.length}/${sortedTiers.length}티어)` });
+          continue;
+        }
+
+        const livePrice = await getPrice(symbol);
+        const stepSize  = await getStepSize(symbol);
+
+        for (const t of toFire) {
+          try {
+            const tierQty     = floorToStep(t.usdtAmount / livePrice, stepSize);
+            await setMarginType(symbol);
+            const usedLev     = await setLeverage(symbol, useLeverage);
+            const order       = await placeMarketBuy(symbol, tierQty, hedgeMode);
+            const filledPrice = parseFloat(order.avgPrice) || livePrice;
+            const filledQty   = parseFloat(order.executedQty) || tierQty;
+            const filledUsdt  = filledPrice * filledQty;
+
+            tierState[t.dropPct] = true;
+            tierStates[symbol] = tierState;
+            saveTierState(tierStates);
+
+            console.log(`  [${symbol}] ★ -${t.dropPct}% 티어($${t.usdtAmount}) 매수 완료: ${filledQty} @ $${filledPrice}  ($${filledUsdt.toFixed(2)})  ${usedLev}x`);
+            results.push({ symbol: `${symbol} -${t.dropPct}%`, status: "매수 완료", qty: filledQty, price: filledPrice, usdt: filledUsdt, lev: usedLev });
+          } catch (e) {
+            console.error(`  [${symbol}] -${t.dropPct}% 티어 매수 오류: ${e.message}`);
+            results.push({ symbol: `${symbol} -${t.dropPct}%`, status: `오류: ${e.message}` });
+          }
+        }
+        continue;
+      } else if (athDropPct) {
+        // 전고점(ATH) 대비 단일 하락률 조건 체크
+        const { ath, curPrice } = await getAthAndPrice(symbol);
+        const triggerPrice = ath * (1 - athDropPct / 100);
+        const dropPct = +((curPrice - ath) / ath * 100).toFixed(2);
+        if (curPrice > triggerPrice) {
+          console.log(`  [${symbol}] 전고점 $${ath} 대비 ${dropPct}% (트리거 -${athDropPct}% = $${triggerPrice.toFixed(2)}) - 조건 미충족`);
+          results.push({ symbol, status: `조건 미충족 (전고점 $${ath} 대비 ${dropPct}%)` });
+          continue;
+        }
+        console.log(`  [${symbol}] ★ 전고점 $${ath} 대비 ${dropPct}% <= -${athDropPct}% → $${usdtAmount} 매수`);
+      }
+
       // 손실 조건 체크
       if (onlyWhenLoss || usdtAmountNoLoss) {
         const pnl = await getPositionPnl(symbol, hedgeMode);
@@ -222,7 +320,7 @@ async function main() {
       }
 
       await setMarginType(symbol);
-      const usedLev     = await setLeverage(symbol, CONFIG.LEVERAGE);
+      const usedLev     = await setLeverage(symbol, useLeverage);
       const order       = await placeMarketBuy(symbol, qty, hedgeMode);
       const filledPrice = parseFloat(order.avgPrice) || await getPrice(symbol);
       const filledQty   = parseFloat(order.executedQty) || qty;
