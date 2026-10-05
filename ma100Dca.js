@@ -2,8 +2,8 @@
  * 1H 100MA 추매 배치
  * 대상: 현재 보유 중인 전체 포지션 (BTC 제외)
  * 조건: 현재가 < 1시간봉 100MA → $100 고정 추매
- *  - 포지션이 한도 절반($1,500) 이하면 손익 무관하게 매수
- *  - 한도 절반 초과 시엔 손실 중일 때만 매수 (현재가 < 평단가) + 2시간에 1회로 속도 제한
+ *  - 평단가와 무관하게 매수 (수익권이어도 추매)
+ *  - 한도 절반($1,500) 초과 시 2시간에 1회로 속도 제한
  *  - 레버리지/마진타입 별도 설정 안 함 (기존 포지션 설정 유지)
  *  - 동일 1시간봉 내 중복 매수 방지 (캔들당 1회)
  *  - 종목당 포지션 $3,000 상한 (전체 notional 기준, 남은 한도만큼만 추매)
@@ -20,7 +20,7 @@ const crypto = require("crypto");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "2026-09-29 v2";
+const VERSION = "2026-10-05 v3";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -265,13 +265,8 @@ async function main() {
         continue;
       }
 
-      // 한도 절반($1,500) 초과 시에만 손실 조건 + 2시간 간격 제한 적용
-      // 절반 이하일 때는 손익 무관하게 매수
+      // 평단가와 무관하게 매수 (한도 절반 초과 시 2시간 간격 제한만 적용)
       const halfCap = CONFIG.MAX_NOTIONAL_USDT / 2;
-      if (notional > halfCap && cur >= entryPrice) {
-        console.log(`  [${symbol}] 현재가 $${cur} < 100MA $${ma} 이지만 수익권 (평단 $${entryPrice}) - 추매 스킵 (포지션 $${notional.toFixed(0)} > 한도절반 $${halfCap})`);
-        continue;
-      }
 
       // 종목당 포지션 상한 체크 (남은 한도만큼만 추매)
       const remaining = CONFIG.MAX_NOTIONAL_USDT - notional;
