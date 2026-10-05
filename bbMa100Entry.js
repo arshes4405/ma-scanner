@@ -8,7 +8,8 @@
  * 신규진입만 수행 (이미 보유 중인 종목은 스킵, DCA 없음)
  * 매수: $500 / 10x Cross
  * BTC 제외, 보유 종목 10개(BTC 제외) 도달 시 신규매수 중단
- * 후보가 남은 한도보다 많으면 24H 거래량 높은 순으로 우선 매수
+ * 매수 대상: 토큰화 주식/ETF (CRCL/TSLA/QQQ 등, contractType=TRADIFI_PERPETUAL) + 시총 탑100 (CoinGecko) 뿐 — 그 외는 매수 제외
+ * 후보 우선순위: 1) 토큰화 주식/ETF 최우선  2) 시총 탑100 순위 (낮은 순위=시총 높은 순 우선)
  * 인버스(숏) 토큰화 ETF 제외 (SQQQ/SOXS/TZA/TBT/UVXY 등)
  *
  * 실행: node bbMa100Entry.js         → 실매수
@@ -20,7 +21,7 @@
 const https  = require("https");
 const crypto = require("crypto");
 
-const VERSION = "2026-10-01 v3";
+const VERSION = "2026-10-04 v7";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -44,6 +45,7 @@ const CONFIG = {
   // SQQQ=숏 나스닥3x, SOXS=숏 반도체3x, TZA=숏 러셀2000 3x, TBT=숏 20Y국채 2x, UVXY=롱 변동성(증시 하락 시 상승)
   INVERSE_SYMBOLS:    ["SQQQUSDT", "SOXSUSDT", "TZAUSDT", "TBTUSDT", "UVXYUSDT"],
   REQUEST_DELAY:      120,
+  TOP100_API_URL:     "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1",
 };
 
 const DRY_RUN = process.argv.includes("--dry-run");
@@ -57,7 +59,7 @@ function sign(qs) {
 
 function httpGet(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    https.get(url, { headers: { "User-Agent": "Mozilla/5.0 (bbMa100Entry.js)" } }, (res) => {
       let data = "";
       res.on("data", (c) => (data += c));
       res.on("end", () => {
@@ -170,18 +172,21 @@ function countConsecutiveBelowMA(closes, period = CONFIG.MA_PERIOD) {
 }
 
 // ─── API (Public) ─────────────────────────────────────────────────────────────
+// TRADIFI_PERPETUAL = Binance가 상장한 토큰화 주식/ETF/원자재 (CRCL/TSLA/NVDA/QQQ 등) → 최우선 매수 대상으로 분류
 async function getSymbolsInfo() {
   const d = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/exchangeInfo`);
   const symbols = [];
   const stepSizes = {};
+  const stockSymbols = new Set();
   for (const s of d.symbols) {
     if (s.quoteAsset === "USDT" && (s.contractType === "PERPETUAL" || s.contractType === "TRADIFI_PERPETUAL") && s.status === "TRADING") {
       symbols.push(s.symbol);
+      if (s.contractType === "TRADIFI_PERPETUAL") stockSymbols.add(s.symbol);
       const lot = s.filters.find(f => f.filterType === "LOT_SIZE");
       if (lot) stepSizes[s.symbol] = parseFloat(lot.stepSize);
     }
   }
-  return { symbols, stepSizes };
+  return { symbols, stepSizes, stockSymbols };
 }
 
 async function getVolumes() {
@@ -192,6 +197,20 @@ async function getVolumes() {
     priceMap[t.symbol] = parseFloat(t.lastPrice);
   }
   return { volMap, priceMap };
+}
+
+// CoinGecko 시총 상위 100개 심볼 조회 → Binance 선물 심볼(XXXUSDT) → 시총 순위(1~100) Map
+// 조회 실패 시 빈 Map 반환 (탑100 우선순위 없이 거래량 우선순위만 적용되도록 폴백)
+async function getTop100RankMap() {
+  try {
+    const d = await httpGet(CONFIG.TOP100_API_URL);
+    const rankMap = new Map();
+    d.forEach((c, i) => rankMap.set(`${c.symbol.toUpperCase()}USDT`, i + 1));
+    return rankMap;
+  } catch (e) {
+    console.error(`\n  [TOP100] CoinGecko 조회 실패, 우선순위 미적용: ${e.message}`);
+    return new Map();
+  }
 }
 
 async function get4hBBThreshold(symbol) {
@@ -286,8 +305,10 @@ async function main() {
   let heldCount = await getHeldSymbolCount(hedgeMode, CONFIG.EXCLUDE_SYMBOLS);
   console.log(`  [포지션] 보유 ${heldCount}/${CONFIG.MAX_POSITIONS} (BTC 제외)`);
 
-  const { symbols: allSymbols, stepSizes } = await getSymbolsInfo();
+  const { symbols: allSymbols, stepSizes, stockSymbols } = await getSymbolsInfo();
   const { volMap, priceMap } = await getVolumes();
+  const top100RankMap = await getTop100RankMap();
+  console.log(`  [TOP100] 시총 상위 100개 순위 조회 완료 (${top100RankMap.size}개)`);
 
   const symbols = allSymbols
     .filter(s => !CONFIG.SKIP_SYMBOLS.includes(s))
@@ -323,7 +344,15 @@ async function main() {
         continue;
       }
 
-      candidates.push({ symbol: sym, curPrice, bbThreshold, gapPct, streak: ma1h.streak, vol });
+      const top100Rank = top100RankMap.get(sym) || null;
+      const isStock = stockSymbols.has(sym);
+      if (!isStock && !top100Rank) {
+        console.log(`  [${sym}] 주식토큰도 시총 탑100도 아님 → 매수 대상 제외`);
+        await sleep(CONFIG.REQUEST_DELAY);
+        continue;
+      }
+
+      candidates.push({ symbol: sym, curPrice, bbThreshold, gapPct, streak: ma1h.streak, vol, top100Rank, isStock });
     } catch (e) {
       console.error(`\n  [${sym}] 오류: ${e.message}`);
       errors.push({ symbol: sym, message: e.message });
@@ -331,15 +360,21 @@ async function main() {
     await sleep(CONFIG.REQUEST_DELAY);
   }
 
-  // ── 2차: 거래량 우선순위(높은 순) 정렬 후, 한도까지만 매수 ──
-  candidates.sort((a, b) => b.vol - a.vol);
-  console.log(`\n\n스캔 완료: 후보 ${candidates.length}개 (거래량 우선순위)`);
-  candidates.forEach((c, i) => console.log(`  ${i + 1}. ${c.symbol.padEnd(14)} 거래량 $${(c.vol / 1e6).toFixed(1)}M  gap ${c.gapPct}%  streak ${c.streak}봉`));
+  // ── 2차: 1) 토큰화 주식/ETF 최우선  2) 시총 탑100 순위 (둘 다 아닌 후보는 이미 위에서 제외됨) ──
+  candidates.sort((a, b) => {
+    const at = a.isStock ? 0 : (a.top100Rank ? 1 : 2);
+    const bt = b.isStock ? 0 : (b.top100Rank ? 1 : 2);
+    if (at !== bt) return at - bt;
+    if (at === 1) return a.top100Rank - b.top100Rank;
+    return b.vol - a.vol;
+  });
+  console.log(`\n\n스캔 완료: 매수대상 후보 ${candidates.length}개 (토큰화 주식 최우선 → 시총 탑100 순위)`);
+  candidates.forEach((c, i) => console.log(`  ${i + 1}. ${c.symbol.padEnd(14)} ${c.isStock ? "[주식토큰] " : c.top100Rank ? `[TOP100 #${c.top100Rank}] ` : ""}거래량 $${(c.vol / 1e6).toFixed(1)}M  gap ${c.gapPct}%  streak ${c.streak}봉`));
 
   const buys = [];
 
   for (const c of candidates) {
-    const { symbol: sym, curPrice, bbThreshold, gapPct, streak, vol } = c;
+    const { symbol: sym, curPrice, bbThreshold, gapPct, streak, vol, top100Rank, isStock } = c;
     try {
       if (!buyEnabled) {
         console.log(`  [${sym}] 잔고 부족 → 매수 스킵`);
@@ -353,7 +388,7 @@ async function main() {
 
       if (DRY_RUN) {
         console.log(`  [${sym}] (dry-run, 미체결)`);
-        buys.push({ symbol: sym, price: curPrice, bbThreshold, gapPct, streak, vol, dryRun: true });
+        buys.push({ symbol: sym, price: curPrice, bbThreshold, gapPct, streak, vol, top100Rank, isStock, dryRun: true });
         heldCount++;
         continue;
       }
@@ -367,7 +402,7 @@ async function main() {
 
       heldCount++;
       console.log(`  [${sym}] 매수 완료: ${filledQty} @ $${filled} orderId: ${order.orderId} (${usedLev}x) | 보유 ${heldCount}/${CONFIG.MAX_POSITIONS}`);
-      buys.push({ symbol: sym, price: filled, qty: filledQty, bbThreshold, gapPct, streak, vol, lev: usedLev });
+      buys.push({ symbol: sym, price: filled, qty: filledQty, bbThreshold, gapPct, streak, vol, top100Rank, isStock, lev: usedLev });
     } catch (e) {
       console.error(`  [${sym}] 오류: ${e.message}`);
       errors.push({ symbol: sym, message: e.message });
@@ -381,7 +416,7 @@ async function main() {
   if (buys.length || errors.length) {
     let msg = `📊 <b>볼린저+100MA 신규진입${DRY_RUN ? " (DRY-RUN)" : ""}</b>  (${VERSION})\n─────────────────\n`;
     for (const b of buys) {
-      msg += `\n<b>${b.symbol}</b>\n`;
+      msg += `\n<b>${b.symbol}</b>${b.isStock ? " 📈주식토큰" : b.top100Rank ? ` 🏆TOP100 #${b.top100Rank}` : ""}\n`;
       msg += `  4H BB임계값 $${b.bbThreshold.toFixed(6)} (fromLower ${CONFIG.BB_FROM_LOWER})  현재가 $${b.price}  (${b.gapPct}%)\n`;
       msg += `  1H 100MA 연속 ${b.streak}봉  거래량 $${(b.vol / 1e6).toFixed(1)}M\n`;
       if (!b.dryRun) msg += `  ✅ 매수 $${CONFIG.ORDER_USDT}  qty ${b.qty}  ${b.lev}x CROSS\n`;
