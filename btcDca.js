@@ -6,6 +6,9 @@
  *    -5% → $5,000 / -10% → $10,000 / -15% → $15,000 / -20% → $20,000 (최대 누적 $50,000)
  *    각 티어는 "평생 1회만" 발동 — ath_tier_state.json에 영구 기록, ATH가 갱신돼도 리셋 안 됨
  *    (전고점은 Binance QQQUSDT 상장 이후 일봉 고가 기준 — 상장 전 실물 ETF 전고점은 반영되지 않음)
+ *  - SOL: QQQ와 같은 비율, 베이스 $3,000, 20x Cross
+ *    -5% → $3,000 / -10% → $6,000 / -15% → $9,000 / -20% → $12,000 (최대 누적 $30,000)
+ *    (전고점은 최근 180일 일봉 고가 기준 — 새 고점이 나오면 기준도 따라 올라감, 발동한 티어는 리셋 안 됨)
  */
 
 const https  = require("https");
@@ -13,7 +16,7 @@ const crypto = require("crypto");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "2026-10-01 v5";
+const VERSION = "2026-10-07 v6";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -33,22 +36,25 @@ function saveTierState(state) {
   try { fs.writeFileSync(CONFIG.TIER_STATE_FILE, JSON.stringify(state, null, 2), "utf8"); } catch (_) {}
 }
 
-// QQQ 티어 베이스 금액 — 이 값만 바꾸면 전체 티어 금액이 1x/2x/3x/4x로 같이 조정됨
+// ATH 티어 베이스 금액 — 이 값만 바꾸면 전체 티어 금액이 1x/2x/3x/4x로 같이 조정됨
 // (예: 7000으로 바꾸면 -5%→$7,000 / -10%→$14,000 / -15%→$21,000 / -20%→$28,000, 최대 누적 $70,000)
 const QQQ_BASE_USDT = 5000;
+const SOL_BASE_USDT = 3000;
+
+// 전고점 대비 -5/-10/-15/-20% 티어, 금액은 베이스의 1x/2x/3x/4x
+const makeAthTiers = (base) => [
+  { dropPct: 5,  usdtAmount: base * 1 },
+  { dropPct: 10, usdtAmount: base * 2 },
+  { dropPct: 15, usdtAmount: base * 3 },
+  { dropPct: 20, usdtAmount: base * 4 },
+];
 
 // BTC: qty 고정 (0.01개 무조건 매수)
-// QQQ: 전고점 대비 하락폭 티어 (평생 1회씩, 여러 티어 동시충족 시 전부 매수), 20x Cross
+// QQQ/SOL: 전고점 대비 하락폭 티어 (평생 1회씩, 여러 티어 동시충족 시 전부 매수), 20x Cross
 const DCA_TARGETS = [
   { symbol: "BTCUSDT",  qty: 0.01, usdtAmount: null, onlyWhenLoss: false },
-  { symbol: "QQQUSDT",  qty: null, usdtAmount: null, onlyWhenLoss: false, leverage: 20,
-    athTiers: [
-      { dropPct: 5,  usdtAmount: QQQ_BASE_USDT * 1 },
-      { dropPct: 10, usdtAmount: QQQ_BASE_USDT * 2 },
-      { dropPct: 15, usdtAmount: QQQ_BASE_USDT * 3 },
-      { dropPct: 20, usdtAmount: QQQ_BASE_USDT * 4 },
-    ],
-  },
+  { symbol: "QQQUSDT",  qty: null, usdtAmount: null, onlyWhenLoss: false, leverage: 20, athTiers: makeAthTiers(QQQ_BASE_USDT) },
+  { symbol: "SOLUSDT",  qty: null, usdtAmount: null, onlyWhenLoss: false, leverage: 20, athTiers: makeAthTiers(SOL_BASE_USDT), athLookbackDays: 180 },
 ];
 
 // --only SYMBOL,SYMBOL2 인자로 특정 심볼만 실행 가능 (예: node btcDca.js --only CRCLUSDT,ETHUSDT)
@@ -164,9 +170,9 @@ async function getPrice(symbol) {
   return parseFloat(data.price);
 }
 
-// 전고점(ATH) + 현재가 조회 (일봉 고가 기준, 최대 1500개 = 상장 이후 전체 기간)
-async function getAthAndPrice(symbol) {
-  const raw = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=1500`);
+// 전고점(ATH) + 현재가 조회 (일봉 고가 기준, 기본 최대 1500개 = 상장 이후 전체 기간, lookbackDays 지정 시 최근 N일 고점)
+async function getAthAndPrice(symbol, lookbackDays = 1500) {
+  const raw = await httpGet(`${CONFIG.BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=${lookbackDays}`);
   let ath = 0;
   for (const k of raw) {
     const high = parseFloat(k[2]);
@@ -230,7 +236,7 @@ async function main() {
   const targets = onlySet ? DCA_TARGETS.filter(t => onlySet.has(t.symbol)) : DCA_TARGETS;
 
   for (const target of targets) {
-    const { symbol, onlyWhenLoss, usdtAmountNoLoss, athDropPct, athTiers, leverage } = target;
+    const { symbol, onlyWhenLoss, usdtAmountNoLoss, athDropPct, athTiers, athLookbackDays, leverage } = target;
     let   { qty, usdtAmount } = target;
     const useLeverage = leverage || CONFIG.LEVERAGE;
 
@@ -238,7 +244,7 @@ async function main() {
       // 전고점(ATH) 대비 하락률 티어 체크 — 티어는 평생 1회만 발동 (ATH 갱신돼도 리셋 안 됨)
       // 한 번에 여러 티어가 동시 충족되면 전부 각각 매수 (예: 하루에 -22%로 급락 시 4티어 전부)
       if (athTiers && athTiers.length) {
-        const { ath, curPrice } = await getAthAndPrice(symbol);
+        const { ath, curPrice } = await getAthAndPrice(symbol, athLookbackDays);
         const dropPct = +((curPrice - ath) / ath * 100).toFixed(2); // 0 또는 음수
         const dropAbs = -dropPct;
 
