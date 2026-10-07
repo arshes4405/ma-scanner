@@ -6,8 +6,8 @@
  *    -5% → $5,000 / -10% → $10,000 / -15% → $15,000 / -20% → $20,000 (최대 누적 $50,000)
  *    각 티어는 "평생 1회만" 발동 — ath_tier_state.json에 영구 기록, ATH가 갱신돼도 리셋 안 됨
  *    (전고점은 Binance QQQUSDT 상장 이후 일봉 고가 기준 — 상장 전 실물 ETF 전고점은 반영되지 않음)
- *  - SOL: QQQ와 같은 비율, 베이스 $3,000, 20x Cross
- *    -5% → $3,000 / -10% → $6,000 / -15% → $9,000 / -20% → $12,000 (최대 누적 $30,000)
+ *  - SOL: QQQ와 같은 금액 비율(1x/2x/3x/4x), 베이스 $3,000, 20x Cross
+ *    -5% → $3,000 / -10% → $6,000 / -20% → $9,000 / -30% → $12,000 (최대 누적 $30,000)
  *    (전고점은 최근 180일 일봉 고가 기준 — 새 고점이 나오면 기준도 따라 올라감, 발동한 티어는 리셋 안 됨)
  */
 
@@ -16,7 +16,7 @@ const crypto = require("crypto");
 const fs     = require("fs");
 const path   = require("path");
 
-const VERSION = "2026-10-07 v6";
+const VERSION = "2026-10-07 v7";
 
 const CONFIG = {
   TG_TOKEN:           process.env.TG_TOKEN           || "8352132886:AAF8H9O62wLKDev2Bqpfs0E2qwBe8lppNII",
@@ -41,20 +41,16 @@ function saveTierState(state) {
 const QQQ_BASE_USDT = 5000;
 const SOL_BASE_USDT = 3000;
 
-// 전고점 대비 -5/-10/-15/-20% 티어, 금액은 베이스의 1x/2x/3x/4x
-const makeAthTiers = (base) => [
-  { dropPct: 5,  usdtAmount: base * 1 },
-  { dropPct: 10, usdtAmount: base * 2 },
-  { dropPct: 15, usdtAmount: base * 3 },
-  { dropPct: 20, usdtAmount: base * 4 },
-];
+// 전고점 대비 하락폭 티어 (기본 -5/-10/-15/-20%), 금액은 베이스의 1x/2x/3x/4x
+const makeAthTiers = (base, drops = [5, 10, 15, 20]) =>
+  drops.map((dropPct, i) => ({ dropPct, usdtAmount: base * (i + 1) }));
 
 // BTC: qty 고정 (0.01개 무조건 매수)
 // QQQ/SOL: 전고점 대비 하락폭 티어 (평생 1회씩, 여러 티어 동시충족 시 전부 매수), 20x Cross
 const DCA_TARGETS = [
   { symbol: "BTCUSDT",  qty: 0.01, usdtAmount: null, onlyWhenLoss: false },
   { symbol: "QQQUSDT",  qty: null, usdtAmount: null, onlyWhenLoss: false, leverage: 20, athTiers: makeAthTiers(QQQ_BASE_USDT) },
-  { symbol: "SOLUSDT",  qty: null, usdtAmount: null, onlyWhenLoss: false, leverage: 20, athTiers: makeAthTiers(SOL_BASE_USDT), athLookbackDays: 180 },
+  { symbol: "SOLUSDT",  qty: null, usdtAmount: null, onlyWhenLoss: false, leverage: 20, athTiers: makeAthTiers(SOL_BASE_USDT, [5, 10, 20, 30]), athLookbackDays: 180 },
 ];
 
 // --only SYMBOL,SYMBOL2 인자로 특정 심볼만 실행 가능 (예: node btcDca.js --only CRCLUSDT,ETHUSDT)
